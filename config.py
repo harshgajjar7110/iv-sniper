@@ -58,6 +58,13 @@ VP_HVN_MULTIPLIER = 1.5             # HVN >= this × mean-bin-volume
 VP_MIN_ADV = 500_000                 # Min Avg Daily Volume (skip dead stocks)
 
 # ──────────────────────────────────────────────
+# Execution Engine (Chunk 4)
+# ──────────────────────────────────────────────
+PAPER_TRADE_MODE = True              # True = Simulate orders, False = Real orders
+MAX_OPEN_TRADES = 5                  # Max concurrent open spreads
+MIN_CAPITAL_REQUIRED = 100_000       # Min free cash to start trading
+
+# ──────────────────────────────────────────────
 # Spread Construction (Chunk 3)
 # ──────────────────────────────────────────────
 DEFAULT_SPREAD_WIDTH = 1             # Number of strikes for spread width

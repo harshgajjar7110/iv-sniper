@@ -98,102 +98,118 @@ def run_scan(
     nse_token_map = build_nse_token_map(kite)
 
     scored: list[dict[str, Any]] = []
-    skipped = 0
-
+    
     logger.info(
-        "Scanning %d F&O stocks (min score: %.0f%%) …",
+        "Scanning %d F&O stocks (min score: %.0f%%) in PARALLEL...",
         len(fno_stocks),
         min_score,
     )
 
-    for i, stock in enumerate(fno_stocks, 1):
-        symbol = stock["symbol"]
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        # ── Skip index underlyings (handled separately if needed) ──
-        if symbol in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"):
-            continue
-
-        nse_token = nse_token_map.get(symbol)
-
-        # ── Step 2a: IV Score ──
-        time.sleep(random.uniform(0.2, 0.5))
-        iv_result = get_iv_score(
-            symbol=symbol,
-            kite=kite,
-            nse_token=nse_token,
-        )
-
-        if iv_result is None:
-            skipped += 1
-            continue
-
-        score = iv_result["score"]
-
-        # ── Step 2b: Filter by threshold ──
-        if score < min_score:
-            logger.debug(
-                "  %s — %s = %.1f%% (below threshold, skipping)",
-                symbol,
-                iv_result["method"],
-                score,
+    # Parallel processing with max_workers=10 (conservative for rate limits)
+    # Kite Connect usually allows ~3 req/sec, but checks are lightweight.
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {
+            executor.submit(
+                _process_stock, kite, stock["symbol"], nse_token_map, min_score
+            ): stock["symbol"]
+            for stock in fno_stocks
+            if stock["symbol"] not in (
+                "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"
             )
-            skipped += 1
-            continue
-
-        # ── Step 2c: Get spot price ──
-        time.sleep(random.uniform(0.2, 0.5))
-        try:
-            ltp_data = kite.ltp([f"NSE:{symbol}"])
-            spot = ltp_data.get(f"NSE:{symbol}", {}).get("last_price")
-        except Exception as exc:
-            logger.warning("  LTP fetch failed for %s: %s", symbol, exc)
-            skipped += 1
-            continue
-
-        if not spot:
-            skipped += 1
-            continue
-
-        # ── Step 2d: Trend detection ──
-        trend_data = {"trend": "Unknown", "ema_50": None, "spot": spot}
-        if nse_token:
-            try:
-                time.sleep(random.uniform(0.2, 0.5))
-                candles = kite.historical_data(nse_token, "day", 120)
-                trend_data = detect_trend(candles, spot)
-            except Exception as exc:
-                logger.warning("  Trend detection failed for %s: %s", symbol, exc)
-
-        candidate = {
-            "symbol": symbol,
-            "score": score,
-            "method": iv_result["method"],
-            "trend": trend_data["trend"],
-            "ema_50": trend_data.get("ema_50"),
-            "spot": spot,
-            "current_iv": iv_result.get("current_iv"),
         }
 
-        scored.append(candidate)
-        logger.info(
-            "  ✓ %s — %s = %.1f%% | Trend: %s | Spot: %.2f | EMA50: %s",
-            symbol,
-            iv_result["method"],
-            score,
-            trend_data["trend"],
-            spot,
-            trend_data.get("ema_50", "N/A"),
-        )
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                result = future.result()
+                if result:
+                    scored.append(result)
+            except Exception as exc:
+                logger.error("Error processing %s: %s", symbol, exc)
 
     # ── Step 3: Sort and truncate ──
     scored.sort(key=lambda c: c["score"], reverse=True)
     top = scored[:max_candidates]
 
     logger.info(
-        "═══ Scan complete: %d qualified, %d skipped, returning top %d ═══",
+        "═══ Scan complete: %d qualified, returning top %d ═══",
         len(scored),
-        skipped,
         len(top),
     )
 
     return top
+
+
+def _process_stock(
+    kite: KiteClient,
+    symbol: str,
+    nse_token_map: dict[str, int],
+    min_score: float,
+) -> dict[str, Any] | None:
+    """Helper to process a single stock (runs in thread)."""
+    nse_token = nse_token_map.get(symbol)
+
+    # ── Step 2a: IV Score ──
+    # Random sleep to prevent rigid thundering herd
+    time.sleep(random.uniform(0.1, 1.0))
+    
+    try:
+        iv_result = get_iv_score(
+            symbol=symbol,
+            kite=kite,
+            nse_token=nse_token,
+        )
+    except Exception as e:
+        logger.warning("IV Score failed for %s: %s", symbol, e)
+        return None
+
+    if iv_result is None:
+        return None
+
+    score = iv_result["score"]
+    method = iv_result["method"]
+
+    # ── Step 2b: Filter by threshold ──
+    if score < min_score:
+        return None  # Silent skip
+
+    # ── Step 2c: Get spot price ──
+    token_str = f"NSE:{symbol}"
+    try:
+        ltp_data = kite.ltp([token_str])
+        spot = ltp_data.get(token_str, {}).get("last_price")
+    except Exception as exc:
+        logger.warning("LTP fetch failed for %s: %s", symbol, exc)
+        return None
+
+    if not spot:
+        return None
+
+    # ── Step 2d: Trend detection ──
+    trend_data = {"trend": "Unknown", "ema_50": None, "spot": spot}
+    if nse_token:
+        try:
+            # We need 120 days history for EMA-50
+            # This is the most expensive call.
+            candles = kite.historical_data(nse_token, "day", 120)
+            trend_data = detect_trend(candles, spot)
+        except Exception as exc:
+            logger.warning("Trend detection failed for %s: %s", symbol, exc)
+
+    candidate = {
+        "symbol": symbol,
+        "score": score,
+        "method": method,
+        "trend": trend_data["trend"],
+        "ema_50": trend_data.get("ema_50"),
+        "spot": spot,
+        "current_iv": iv_result.get("current_iv"),
+    }
+    
+    logger.info(
+        "  ✓ %s — %s = %.1f%% | Trend: %s",
+        symbol, method, score, trend_data["trend"]
+    )
+    return candidate

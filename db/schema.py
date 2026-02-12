@@ -29,13 +29,37 @@ CREATE TABLE IF NOT EXISTS iv_history (
 
 _CREATE_TRADE_LOG = """
 CREATE TABLE IF NOT EXISTS trade_log (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    trade_id    TEXT    NOT NULL UNIQUE,        -- UUID identifying the trade
-    symbol      TEXT    NOT NULL,
-    entry_time  TEXT    NOT NULL,               -- ISO-8601
-    exit_time   TEXT,                           -- NULL while position is open
-    pnl         REAL,                           -- realised P&L (NULL while open)
-    status      TEXT    NOT NULL DEFAULT 'OPEN' -- OPEN | CLOSED | EXPIRED | ERROR
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id      TEXT    NOT NULL UNIQUE,        -- UUID
+    symbol        TEXT    NOT NULL,
+    strategy      TEXT    NOT NULL,               -- BULL_PUT | BEAR_CALL
+    status        TEXT    NOT NULL DEFAULT 'OPEN',-- OPEN | CLOSED | ERROR
+    mode          TEXT    NOT NULL DEFAULT 'PAPER', -- PAPER | LIVE
+    
+    -- Entry Details
+    entry_time    TEXT    NOT NULL,               -- ISO-8601
+    short_strike  REAL    NOT NULL,
+    long_strike   REAL    NOT NULL,
+    expiry        TEXT    NOT NULL,               -- YYYY-MM-DD
+    lot_size      INTEGER NOT NULL,
+    
+    -- Pricing & P&L
+    entry_short_pr REAL   NOT NULL,               -- Premium received
+    entry_long_pr  REAL   NOT NULL,               -- Premium paid
+    net_credit     REAL   NOT NULL,
+    sl_price       REAL,                          -- Stop Loss level (short leg premium)
+    target_price   REAL,                          -- Target level (short leg premium)
+    
+    -- Exit Details
+    exit_time      TEXT,
+    exit_short_pr  REAL,
+    exit_long_pr   REAL,
+    pnl            REAL,                          -- Realised P&L
+    exit_reason    TEXT,                          -- TARGET | SL | EXPIRY | MANUAL
+    
+    -- Order IDs (for live tracking)
+    short_order_id TEXT,
+    long_order_id  TEXT
 );
 """
 

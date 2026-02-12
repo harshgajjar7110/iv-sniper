@@ -27,13 +27,17 @@ This document provides essential context for AI models interacting with this pro
     - `/core` — Core computation and API modules (Kite client, HV/IV calculators, trend detector, instrument master)
     - `/scanner` — Scanner module: IV/IVP scoring + trend filtering (Chunk 2 deliverable)
     - `/analyst` — Analyst module: Volume Profile, strike selection, spread construction (Chunk 3 deliverable)
+    - `/executor` — Execution Engine: Risk guards, order placement, trade logging (Chunk 4 deliverable)
+    - `/watchdog` — Watchdog: Monitor open positions & auto-exit on Target/SL/Expiry (Chunk 5 deliverable)
     - `/db` — Database connection management and schema definitions
     - `/data` — Runtime-generated SQLite database files (gitignored)
-    - `/tests` — Unit tests for VP calculation and strike selector
+    - `/tests` — Unit tests using `unittest`
     - `config.py` — Central configuration with env-var-backed secrets
     - `daily_iv_logger.py` — Cron job entry point (Chunk 1 deliverable)
     - `run_scanner.py` — Scanner CLI entry point (Chunk 2 deliverable)
     - `run_analyst.py` — Analyst CLI entry point (Chunk 3 deliverable)
+    - `run_executor.py` — Main Execution Pipeline (Chunk 4 deliverable)
+    - `watchdog_job.py` — Watchdog daemon/cron entry point (Chunk 5 deliverable)
 
 ## 4. Coding Conventions & Style Guide
 
@@ -53,6 +57,8 @@ This document provides essential context for AI models interacting with this pro
     - `daily_iv_logger.py` — Daily IV snapshot cron job (Chunk 1)
     - `run_scanner.py` — Scanner CLI for filtering candidates (Chunk 2)
     - `run_analyst.py` — Analyst CLI: VP + spread builder (Chunk 3)
+    - `run_executor.py` — Main Pipeline: Scan → Analyze → Execute (Chunk 4)
+    - `watchdog_job.py` — Watchdog Monitor: Exit management (Chunk 5)
 * **Configuration:** `config.py` (reads from `.env` via `python-dotenv`)
 * **Database Init:** `python -m db.schema`
 
