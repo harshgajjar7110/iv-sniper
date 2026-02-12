@@ -24,11 +24,16 @@ This document provides essential context for AI models interacting with this pro
 
 * **Overall Architecture:** Modular monolith — five pipeline stages (Data Ingestion → Scanner → Analyst → Executor → Watchdog) within a single codebase.
 * **Directory Structure Philosophy:**
-    - `/core` — Core computation and API modules (Kite client, HV/IV calculators)
+    - `/core` — Core computation and API modules (Kite client, HV/IV calculators, trend detector, instrument master)
+    - `/scanner` — Scanner module: IV/IVP scoring + trend filtering (Chunk 2 deliverable)
+    - `/analyst` — Analyst module: Volume Profile, strike selection, spread construction (Chunk 3 deliverable)
     - `/db` — Database connection management and schema definitions
     - `/data` — Runtime-generated SQLite database files (gitignored)
+    - `/tests` — Unit tests for VP calculation and strike selector
     - `config.py` — Central configuration with env-var-backed secrets
     - `daily_iv_logger.py` — Cron job entry point (Chunk 1 deliverable)
+    - `run_scanner.py` — Scanner CLI entry point (Chunk 2 deliverable)
+    - `run_analyst.py` — Analyst CLI entry point (Chunk 3 deliverable)
 
 ## 4. Coding Conventions & Style Guide
 
@@ -44,8 +49,11 @@ This document provides essential context for AI models interacting with this pro
 
 ## 5. Key Files & Entrypoints
 
-* **Main Entrypoint:** `daily_iv_logger.py` (Chunk 1)
-* **Configuration:** `config.py` (reads from environment variables)
+* **Main Entrypoints:**
+    - `daily_iv_logger.py` — Daily IV snapshot cron job (Chunk 1)
+    - `run_scanner.py` — Scanner CLI for filtering candidates (Chunk 2)
+    - `run_analyst.py` — Analyst CLI: VP + spread builder (Chunk 3)
+* **Configuration:** `config.py` (reads from `.env` via `python-dotenv`)
 * **Database Init:** `python -m db.schema`
 
 ## 6. Development & Testing Workflow
@@ -53,9 +61,12 @@ This document provides essential context for AI models interacting with this pro
 * **Setup:**
     1. `python -m venv venv && venv\Scripts\activate`
     2. `pip install -r requirements.txt`
-    3. Set env vars: `KITE_API_KEY`, `KITE_API_SECRET`, `KITE_ACCESS_TOKEN`
+    3. Create `.env` with: `KITE_API_KEY`, `KITE_API_SECRET`, `KITE_ACCESS_TOKEN`
     4. `python -m db.schema` (create tables)
-* **Run:** `python daily_iv_logger.py --once` (test) or `python daily_iv_logger.py` (scheduled)
+* **Run:**
+    - `python daily_iv_logger.py --once` (test IV snapshot)
+    - `python daily_iv_logger.py` (scheduled daily @ 15:25 IST)
+    - `python run_scanner.py --top 5 --min-score 50` (scan for candidates)
 
 ## 7. Specific Instructions for AI Collaboration
 

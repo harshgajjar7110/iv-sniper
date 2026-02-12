@@ -50,6 +50,21 @@ HV_RANK_THRESHOLD = 50              # Min HV Rank % to qualify
 IVP_THRESHOLD = 50                   # Min IVP % to qualify
 
 # ──────────────────────────────────────────────
+# Volume Profile (Chunk 3)
+# ──────────────────────────────────────────────
+VP_LOOKBACK_DAYS = 60                # Days of candles for VP calculation
+VP_VALUE_AREA_PCT = 70               # Value Area accumulates this % of volume
+VP_HVN_MULTIPLIER = 1.5             # HVN >= this × mean-bin-volume
+VP_MIN_ADV = 500_000                 # Min Avg Daily Volume (skip dead stocks)
+
+# ──────────────────────────────────────────────
+# Spread Construction (Chunk 3)
+# ──────────────────────────────────────────────
+DEFAULT_SPREAD_WIDTH = 1             # Number of strikes for spread width
+SPREAD_SL_PCT = 100                  # SL at 100% of credit (premium doubles)
+SPREAD_TARGET_PCT = 50               # Target at 50% of credit collected
+
+# ──────────────────────────────────────────────
 # Safety & Rate Limiting
 # ──────────────────────────────────────────────
 MAX_API_RETRIES = 5

@@ -16,7 +16,7 @@ env/
 .idea/
 
 # Data & Secrets
-data/*.db
+
 .env
 *.log
 
