@@ -211,11 +211,52 @@ def render_margin_check(kite):
 def render_trade_actions(candidate: dict, analysis: dict):
     """Render trade execution buttons."""
     
+    from executor.order_manager import OrderManager
+    
     st.markdown("### 🎯 Trade Actions")
     
     col1, col2 = st.columns(2)
     
     trade_mode = st.session_state.trade_mode
+    
+    # Extract spread data from analysis
+    if not analysis:
+        st.warning("No analysis available. Please wait for analysis to complete.")
+        return
+    
+    is_bullish = candidate.get('trend') == 'Bullish'
+    strategy = "BULL_PUT" if is_bullish else "BEAR_CALL"
+    leg_type = "PE" if is_bullish else "CE"
+    
+    # Build spread data for order manager
+    short_strike = analysis.get('short_strike', 0)
+    long_strike = analysis.get('long_strike', 0)
+    lot_size = analysis.get('lot_size', 0)
+    
+    if short_strike == 0 or long_strike == 0 or lot_size == 0:
+        st.warning("Invalid spread data. Please re-analyze the stock.")
+        return
+    
+    # Get current premiums
+    short_premium = analysis.get('short_premium', 45.0)
+    long_premium = analysis.get('long_premium', 20.0)
+    net_credit = short_premium - long_premium
+    
+    # Build spread dict for order manager
+    spread = {
+        "short_symbol": f"{candidate['symbol']}PE",  # Will be formatted by order manager
+        "long_symbol": f"{candidate['symbol']}PE",
+        "short_strike": short_strike,
+        "long_strike": long_strike,
+        "type": strategy,
+        "lot_size": lot_size,
+        "short_premium": short_premium,
+        "long_premium": long_premium,
+        "net_credit": net_credit,
+        "sl_premium": short_premium * 2,  # SL at 100% of credit
+        "target_premium": short_premium * 0.5,  # Target at 50% of credit
+        "expiry": analysis.get('expiry', '')
+    }
     
     with col1:
         market_btn = st.button(
@@ -226,9 +267,32 @@ def render_trade_actions(candidate: dict, analysis: dict):
         )
         
         if market_btn:
-            # TODO: Implement actual order placement
-            st.success("✅ Market order placed successfully!")
-            st.rerun()
+            try:
+                kite = get_kite_client()
+                if not kite:
+                    st.error("❌ Failed to connect to Kite. Please check your connection.")
+                    return
+                
+                order_manager = OrderManager(kite)
+                
+                # Place the spread order (will use market price logic internally)
+                success = order_manager.place_spread_order(
+                    symbol=candidate['symbol'],
+                    spread=spread,
+                    is_paper=(trade_mode == "PAPER")
+                )
+                
+                if success:
+                    st.success("✅ Market order placed successfully!")
+                    logger.info(f"Market order placed for {candidate['symbol']}")
+                    st.rerun()
+                else:
+                    st.error("❌ Order placement failed. Check logs for details.")
+                    logger.error(f"Market order failed for {candidate['symbol']}")
+                    
+            except Exception as e:
+                logger.error(f"Market order exception: {e}")
+                st.error(f"❌ Order placement error: {str(e)}")
     
     with col2:
         limit_btn = st.button(
@@ -238,9 +302,39 @@ def render_trade_actions(candidate: dict, analysis: dict):
         )
         
         if limit_btn:
-            # TODO: Implement actual limit order placement
-            st.success("✅ Limit order placed at mid-price!")
-            st.rerun()
+            try:
+                kite = get_kite_client()
+                if not kite:
+                    st.error("❌ Failed to connect to Kite. Please check your connection.")
+                    return
+                
+                # Calculate mid-price for limit order
+                mid_price = (short_premium + long_premium) / 2
+                
+                order_manager = OrderManager(kite)
+                
+                # Modify spread for limit order with mid-price
+                limit_spread = spread.copy()
+                limit_spread["short_premium"] = mid_price * 0.95  # 5% buffer for limit sell
+                limit_spread["long_premium"] = mid_price * 1.05   # 5% buffer for limit buy
+                
+                success = order_manager.place_spread_order(
+                    symbol=candidate['symbol'],
+                    spread=limit_spread,
+                    is_paper=(trade_mode == "PAPER")
+                )
+                
+                if success:
+                    st.success(f"✅ Limit order placed at ₹{mid_price:.2f}!")
+                    logger.info(f"Limit order placed for {candidate['symbol']} at ₹{mid_price:.2f}")
+                    st.rerun()
+                else:
+                    st.error("❌ Order placement failed. Check logs for details.")
+                    logger.error(f"Limit order failed for {candidate['symbol']}")
+                    
+            except Exception as e:
+                logger.error(f"Limit order exception: {e}")
+                st.error(f"❌ Order placement error: {str(e)}")
     
     if trade_mode == "PAPER":
         st.info("📝 Paper Trading Mode - Orders are simulated. Switch to LIVE mode to trade real money.")

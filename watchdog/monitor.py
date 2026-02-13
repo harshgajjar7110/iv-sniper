@@ -9,6 +9,7 @@ from typing import Any
 from core.kite_client import KiteClient
 from db.connection import get_connection
 from watchdog.exits import ExitManager
+from ui.utils.symbol_utils import get_trade_symbols_dict
 import config
 
 logger = logging.getLogger(__name__)
@@ -28,38 +29,15 @@ def run_watchdog(kite: KiteClient):
 
     logger.info(f"Monitoring {len(open_trades)} open trades...")
 
-    # 2. Reconstruct symbols to fetch quotes
-    # Need to map trade_id -> symbols
-    trade_symbols = {} # trade_id -> {short: "INFY...", long: "INFY..."}
-    all_instruments = [] # list of "NFO:INFY..."
-    
-    for t in open_trades:
-        # Reconstruct Trading Symbol (Standard Monthly Format)
-        # SYMBOL + YY + MON + STRIKE + TYPE
-        # e.g., NIFTY23OCT18000CE
-        # We stored expiry as YYYY-MM-DD string
-        try:
-            exp_date = datetime.strptime(t["expiry"], "%Y-%m-%d").date()
-        except ValueError:
-            logger.error(f"Invalid expiry format for trade {t['trade_id']}: {t['expiry']}")
-            continue
-            
-        yy = str(exp_date.year)[-2:]
-        mon = exp_date.strftime("%b").upper() # JAN, FEB...
-        
-        # Short Leg
-        short_type = t["strategy"].split("_")[1] # BULL_PUT -> PUT? No, BULL_PUT -> PE?
-        # Strategy: BULL_PUT (Short PE), BEAR_CALL (Short CE)
-        # Schema says strategy is BULL_PUT | BEAR_CALL.
-        # Logic: BULL_PUT -> Short PE, Long PE.
-        # BEAR_CALL -> Short CE, Long CE.
-        leg_type = "PE" if "PUT" in t["strategy"] else "CE"
-        
-        s_sym = f"{t['symbol']}{yy}{mon}{int(t['short_strike'])}{leg_type}"
-        l_sym = f"{t['symbol']}{yy}{mon}{int(t['long_strike'])}{leg_type}"
-        
-        trade_symbols[t["trade_id"]] = {"short": s_sym, "long": l_sym}
-        all_instruments.extend([f"NFO:{s_sym}", f"NFO:{l_sym}"])
+    # 2. Use utility function to get symbols for all trades
+    try:
+        trade_symbols = get_trade_symbols_dict(open_trades)
+        all_instruments = []
+        for sym_dict in trade_symbols.values():
+            all_instruments.extend([sym_dict['short'], sym_dict['long']])
+    except Exception as e:
+        logger.error(f"Failed to get trade symbols: {e}")
+        return
 
     if not all_instruments:
         return

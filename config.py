@@ -63,6 +63,7 @@ VP_MIN_ADV = 500_000                 # Min Avg Daily Volume (skip dead stocks)
 PAPER_TRADE_MODE = True              # True = Simulate orders, False = Real orders
 MAX_OPEN_TRADES = 5                  # Max concurrent open spreads
 MIN_CAPITAL_REQUIRED = 100_000       # Min free cash to start trading
+TOTAL_CAPITAL = 1_000_000            # Total capital for the trading account
 
 # ──────────────────────────────────────────────
 # Spread Construction (Chunk 3)

@@ -363,12 +363,22 @@ def _run_scan_with_live_logs(min_ivp: float) -> None:
     st.session_state.scan_error = None
     st.session_state.analysis_cache = {}  # Clear cached analysis for new scan
     
+    # Create thread-safe shared data structures for communication between threads
+    # These will be accessed from the background thread and read by the main thread
+    shared_logs = []
+    shared_progress = {"current": 0, "total": 0, "qualified": 0}
+    shared_results = {"results": None, "scan_id": None, "error": None, "done": False}
+    lock = threading.Lock()
+    
     def progress_callback(current: int, total: int, message: str, qualified: int) -> None:
-        """Callback to update progress during scan."""
+        """Callback to update progress during scan - thread-safe."""
         timestamp = datetime.now().strftime("%H:%M:%S")
         log_entry = f"[{timestamp}] {message}"
-        st.session_state.scan_logs.append(log_entry)
-        st.session_state.scan_progress = {"current": current, "total": total, "qualified": qualified}
+        with lock:
+            shared_logs.append(log_entry)
+            shared_progress["current"] = current
+            shared_progress["total"] = total
+            shared_progress["qualified"] = qualified
     
     def run_scanner_thread():
         """Run the scanner in a background thread."""
@@ -379,17 +389,25 @@ def _run_scan_with_live_logs(min_ivp: float) -> None:
                 min_score=min_ivp,
                 progress_callback=progress_callback
             )
-            st.session_state.scan_results = results
-            st.session_state.current_scan_id = scan_id
+            with lock:
+                shared_results["results"] = results
+                shared_results["scan_id"] = scan_id
+                shared_results["done"] = True
         except Exception as e:
-            st.session_state.scan_error = str(e)
+            with lock:
+                shared_results["error"] = str(e)
+                shared_results["done"] = True
             logger.error(f"Scanner error: {e}")
-        finally:
-            st.session_state.scan_in_progress = False
     
     # Start scanner in background thread
     scanner_thread = threading.Thread(target=run_scanner_thread, daemon=True)
     scanner_thread.start()
+    
+    # Store shared data structures in session state for polling
+    st.session_state.scan_shared_logs = shared_logs
+    st.session_state.scan_shared_progress = shared_progress
+    st.session_state.scan_shared_results = shared_results
+    st.session_state.scan_lock = lock
     
     # Show initial status
     st.info("🔄 Starting scan... The page will refresh automatically.")
@@ -399,6 +417,37 @@ def _display_scan_status():
     """Display the current scan status if a scan is in progress."""
     if not st.session_state.get('scan_in_progress', False):
         return False
+    
+    # Sync shared data from background thread to session state (thread-safe)
+    lock = st.session_state.get('scan_lock')
+    if lock:
+        with lock:
+            # Copy shared data to session state for display
+            shared_logs = st.session_state.get('scan_shared_logs', [])
+            shared_progress = st.session_state.get('scan_shared_progress', {"current": 0, "total": 0, "qualified": 0})
+            shared_results = st.session_state.get('scan_shared_results', {"results": None, "scan_id": None, "error": None, "done": False})
+            
+            # Update session state with latest data
+            st.session_state.scan_logs = list(shared_logs)  # Create a copy
+            st.session_state.scan_progress = dict(shared_progress)  # Create a copy
+            
+            # Check if scan is complete
+            if shared_results["done"]:
+                st.session_state.scan_in_progress = False
+                if shared_results["error"]:
+                    st.session_state.scan_error = shared_results["error"]
+                else:
+                    st.session_state.scan_results = shared_results["results"]
+                    st.session_state.current_scan_id = shared_results["scan_id"]
+                
+                # Clean up shared data structures
+                st.session_state.pop('scan_shared_logs', None)
+                st.session_state.pop('scan_shared_progress', None)
+                st.session_state.pop('scan_shared_results', None)
+                st.session_state.pop('scan_lock', None)
+                
+                # Trigger rerun to show results
+                st.rerun()
     
     # Create status container
     with st.status("🔄 Scanning F&O Universe...", expanded=True) as status:

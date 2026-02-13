@@ -78,6 +78,16 @@ CREATE TABLE IF NOT EXISTS scan_results (
 );
 """
 
+_CREATE_CONFIG_SETTINGS = """
+CREATE TABLE IF NOT EXISTS config_settings (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    key             TEXT    NOT NULL UNIQUE,       -- Setting key (e.g., 'capital_risk_limit_pct')
+    value           TEXT    NOT NULL,              -- Setting value as text
+    updated_at      TEXT    NOT NULL,              -- ISO-8601 datetime when updated
+    description     TEXT                        -- Optional description
+);
+"""
+
 _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_iv_symbol ON iv_history(stock_symbol);",
     "CREATE INDEX IF NOT EXISTS idx_iv_ts     ON iv_history(timestamp);",
@@ -96,6 +106,7 @@ def initialise_database() -> None:
         conn.execute(_CREATE_IV_HISTORY)
         conn.execute(_CREATE_TRADE_LOG)
         conn.execute(_CREATE_SCAN_RESULTS)
+        conn.execute(_CREATE_CONFIG_SETTINGS)
         for idx_sql in _CREATE_INDEXES:
             conn.execute(idx_sql)
     print("[db] Database initialised successfully.")

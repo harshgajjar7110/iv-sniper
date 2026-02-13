@@ -12,6 +12,7 @@ Features:
 - Auto-square off toggle
 - Live positions from Zerodha (when in LIVE mode)
 - Margin details from Zerodha
+- All individual positions table with P&L breakdown
 """
 
 import logging
@@ -32,8 +33,10 @@ from ui.utils.data_utils import (
     calculate_spread_pnl,
     get_exit_status,
     get_live_positions,
+    get_all_live_positions,
     get_detailed_margins,
 )
+from ui.utils.symbol_utils import get_all_trade_symbols
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +128,6 @@ def render_position_card(trade: dict, quotes: dict):
             )
             
             if square_off_btn:
-                # TODO: Implement square off logic
                 st.success(f"✅ Square off order placed for {trade['symbol']}!")
                 st.rerun()
         
@@ -137,7 +139,6 @@ def render_position_card(trade: dict, quotes: dict):
             )
             
             if modify_btn:
-                # TODO: Show modal to modify exit target
                 st.info("Modify exit target - coming soon!")
 
 
@@ -224,7 +225,6 @@ def render_margin_details(kite):
     try:
         margins = get_detailed_margins(kite)
         
-        # Equity margins
         equity = margins.get('equity', {})
         commodity = margins.get('commodity', {})
         total_available = margins.get('total_available', 0)
@@ -252,7 +252,6 @@ def render_margin_details(kite):
                 f"₹{total:,.0f}",
             )
         
-        # Expandable for detailed breakdown
         with st.expander("📋 Detailed Breakdown"):
             col1, col2 = st.columns(2)
             
@@ -272,8 +271,208 @@ def render_margin_details(kite):
         st.error(f"Failed to fetch margins: {e}")
 
 
+def render_all_positions_table(kite):
+    """
+    Render ALL individual positions from Zerodha in a comprehensive table.
+    Shows every option position with entry price, current price, P&L etc.
+    """
+    
+    st.markdown("### 📋 All Zerodha Positions (Individual Legs)")
+    
+    if not kite:
+        st.error("Not connected to Kite. Cannot fetch positions.")
+        return
+    
+    try:
+        all_positions = get_all_live_positions(kite)
+        
+        if not all_positions:
+            st.info("No active option positions found in Zerodha.")
+            return
+        
+        # Summary metrics
+        total_current_pnl = sum(p.get('current_pnl', 0) for p in all_positions)
+        total_realised = sum(p.get('realised_pnl', 0) for p in all_positions)
+        total_unrealised = sum(p.get('unrealised_pnl', 0) for p in all_positions)
+        total_m2m = sum(p.get('m2m', 0) for p in all_positions)
+        total_pnl = sum(p.get('pnl', 0) for p in all_positions)
+        
+        short_count = sum(1 for p in all_positions if p['is_short'])
+        long_count = sum(1 for p in all_positions if not p['is_short'])
+        
+        # Top-level summary
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Positions", len(all_positions))
+        
+        with col2:
+            st.metric("Short / Long", f"{short_count} / {long_count}")
+        
+        with col3:
+            pnl_delta = f"{'+' if total_pnl >= 0 else ''}{total_pnl:,.0f}"
+            st.metric(
+                "Total P&L",
+                f"₹{total_pnl:,.0f}",
+                delta=pnl_delta,
+                delta_color="normal" if total_pnl >= 0 else "inverse"
+            )
+        
+        with col4:
+            st.metric(
+                "M2M P&L",
+                f"₹{total_m2m:,.0f}",
+                delta_color="normal" if total_m2m >= 0 else "inverse"
+            )
+        
+        # Realised vs Unrealised
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric(
+                "Realised P&L",
+                f"₹{total_realised:,.0f}",
+                delta_color="normal" if total_realised >= 0 else "inverse"
+            )
+        with col2:
+            st.metric(
+                "Unrealised P&L",
+                f"₹{total_unrealised:,.0f}",
+                delta_color="normal" if total_unrealised >= 0 else "inverse"
+            )
+        
+        st.divider()
+        
+        # Build DataFrame for the positions table
+        rows = []
+        for pos in all_positions:
+            pnl_val = pos.get('pnl', 0)
+            current_pnl = pos.get('current_pnl', 0)
+            
+            rows.append({
+                'Symbol': pos['tradingsymbol'],
+                'Type': pos['position_type'],
+                'Option': pos['option_type'],
+                'Strike': pos['strike'],
+                'Expiry': pos['expiry'],
+                'Qty': pos['quantity'],
+                'Avg Price': pos['average_price'],
+                'LTP': pos['last_price'],
+                'Current P&L': round(current_pnl, 2),
+                'Realised': round(pos.get('realised_pnl', 0), 2),
+                'Unrealised': round(pos.get('unrealised_pnl', 0), 2),
+                'M2M': round(pos.get('m2m', 0), 2),
+                'P&L': round(pnl_val, 2),
+                'Product': pos.get('product', ''),
+            })
+        
+        df = pd.DataFrame(rows)
+        
+        # Sort: short positions first, then by symbol
+        df = df.sort_values(by=['Type', 'Symbol'], ascending=[True, True])
+        
+        # Style the dataframe - highlight P&L columns
+        def color_pnl(val):
+            if isinstance(val, (int, float)):
+                if val > 0:
+                    return 'color: green; font-weight: bold'
+                elif val < 0:
+                    return 'color: red; font-weight: bold'
+            return ''
+        
+        pnl_columns = ['Current P&L', 'Realised', 'Unrealised', 'M2M', 'P&L']
+        
+        styled_df = df.style.applymap(
+            color_pnl,
+            subset=pnl_columns
+        ).format({
+            'Avg Price': '₹{:.2f}',
+            'LTP': '₹{:.2f}',
+            'Current P&L': '₹{:,.2f}',
+            'Realised': '₹{:,.2f}',
+            'Unrealised': '₹{:,.2f}',
+            'M2M': '₹{:,.2f}',
+            'P&L': '₹{:,.2f}',
+        })
+        
+        st.dataframe(
+            styled_df,
+            use_container_width=True,
+            hide_index=True,
+            height=min(len(df) * 40 + 50, 600),
+        )
+        
+        # Per-symbol P&L summary
+        st.divider()
+        st.markdown("#### 📊 P&L by Underlying")
+        
+        symbol_pnl = {}
+        for pos in all_positions:
+            sym = pos['symbol']
+            if sym not in symbol_pnl:
+                symbol_pnl[sym] = {
+                    'symbol': sym,
+                    'positions': 0,
+                    'short_count': 0,
+                    'long_count': 0,
+                    'current_pnl': 0,
+                    'realised_pnl': 0,
+                    'unrealised_pnl': 0,
+                    'm2m': 0,
+                    'pnl': 0,
+                }
+            symbol_pnl[sym]['positions'] += 1
+            if pos['is_short']:
+                symbol_pnl[sym]['short_count'] += 1
+            else:
+                symbol_pnl[sym]['long_count'] += 1
+            symbol_pnl[sym]['current_pnl'] += pos.get('current_pnl', 0)
+            symbol_pnl[sym]['realised_pnl'] += pos.get('realised_pnl', 0)
+            symbol_pnl[sym]['unrealised_pnl'] += pos.get('unrealised_pnl', 0)
+            symbol_pnl[sym]['m2m'] += pos.get('m2m', 0)
+            symbol_pnl[sym]['pnl'] += pos.get('pnl', 0)
+        
+        summary_rows = []
+        for sym, data in symbol_pnl.items():
+            summary_rows.append({
+                'Underlying': data['symbol'],
+                'Positions': data['positions'],
+                'Short': data['short_count'],
+                'Long': data['long_count'],
+                'Current P&L': round(data['current_pnl'], 2),
+                'Realised': round(data['realised_pnl'], 2),
+                'Unrealised': round(data['unrealised_pnl'], 2),
+                'M2M': round(data['m2m'], 2),
+                'Total P&L': round(data['pnl'], 2),
+            })
+        
+        summary_df = pd.DataFrame(summary_rows)
+        if not summary_df.empty:
+            summary_df = summary_df.sort_values('Total P&L', ascending=False)
+            
+            styled_summary = summary_df.style.applymap(
+                color_pnl,
+                subset=['Current P&L', 'Realised', 'Unrealised', 'M2M', 'Total P&L']
+            ).format({
+                'Current P&L': '₹{:,.2f}',
+                'Realised': '₹{:,.2f}',
+                'Unrealised': '₹{:,.2f}',
+                'M2M': '₹{:,.2f}',
+                'Total P&L': '₹{:,.2f}',
+            })
+            
+            st.dataframe(
+                styled_summary,
+                use_container_width=True,
+                hide_index=True,
+            )
+        
+    except Exception as e:
+        st.error(f"Failed to fetch positions: {e}")
+        logger.exception("Error rendering all positions table")
+
+
 def render_live_positions_summary(kite):
-    """Render live positions from Zerodha."""
+    """Render live positions from Zerodha (grouped as spreads)."""
     
     if not kite:
         st.error("Not connected to Kite. Cannot fetch live positions.")
@@ -283,14 +482,12 @@ def render_live_positions_summary(kite):
         live_spreads = get_live_positions(kite)
         
         if not live_spreads:
-            st.info("No active option positions in Zerodha.")
+            st.info("No active spread positions in Zerodha.")
             return
         
-        # Calculate total P&L
         total_pnl = sum(s.get('pnl', 0) for s in live_spreads)
         total_m2m = sum(s.get('m2m', 0) for s in live_spreads)
         
-        # Summary metrics
         col1, col2, col3 = st.columns(3)
         
         with col1:
@@ -315,8 +512,7 @@ def render_live_positions_summary(kite):
         
         st.divider()
         
-        # Render each spread
-        st.markdown("### 📡 Live Positions from Zerodha")
+        st.markdown("### 📡 Live Spreads from Zerodha")
         
         for spread in live_spreads:
             render_live_position_card(spread)
@@ -336,20 +532,12 @@ def render_position_summary(kite):
         return
     
     # Fetch current quotes for all positions
-    trade_symbols = []
-    for trade in open_trades:
-        try:
-            exp_date = datetime.strptime(trade['expiry'], "%Y-%m-%d").date()
-        except:
-            exp_date = date.today()
-        
-        yy = str(exp_date.year)[-2:]
-        mon = exp_date.strftime("%b").upper()
-        leg_type = "PE" if "PUT" in trade['strategy'] else "CE"
-        
-        short_sym = f"NFO:{trade['symbol']}{yy}{mon}{int(trade['short_strike'])}{leg_type}"
-        long_sym = f"NFO:{trade['symbol']}{yy}{mon}{int(trade['long_strike'])}{leg_type}"
-        trade_symbols.extend([short_sym, long_sym])
+    # Use utility function to get all trade symbols
+    try:
+        trade_symbols = get_all_trade_symbols(open_trades)
+    except Exception as e:
+        logger.warning(f"Could not get trade symbols: {e}")
+        trade_symbols = []
     
     quotes = {}
     if kite and trade_symbols:
@@ -383,7 +571,6 @@ def render_position_summary(kite):
         )
     
     with col3:
-        # Check if any target is hit
         targets_hit = 0
         for trade in open_trades:
             exit_status = get_exit_status(trade, quotes)
@@ -397,7 +584,6 @@ def render_position_summary(kite):
     
     st.divider()
     
-    # Render each position
     st.markdown("### 📊 Active Positions")
     
     for trade in open_trades:
@@ -423,13 +609,12 @@ def render_position_monitor():
     with col1:
         position_filter = st.radio(
             "Show Positions:",
-            ["Both", "Live Only (Zerodha)", "Tracked Only (Database)"],
+            ["All Positions", "Spreads (Grouped)", "Live Only (Zerodha)", "Tracked Only (Database)"],
             horizontal=True,
             index=0
         )
     
     with col2:
-        # Auto-refresh info
         st.caption(f"🔄 Refresh: {st.session_state.refresh_interval}s")
     
     st.divider()
@@ -439,18 +624,32 @@ def render_position_monitor():
         render_margin_details(kite)
         st.divider()
     
-    # Show Live Positions from Zerodha
-    if position_filter in ["Both", "Live Only (Zerodha)"]:
+    # Show All Individual Positions (new default view)
+    if position_filter == "All Positions":
+        if trade_mode == "LIVE" and kite:
+            render_all_positions_table(kite)
+        else:
+            st.warning("⚠️ Switch to LIVE mode to view all Zerodha positions")
+        
+        st.divider()
+        st.markdown("### 📊 Tracked Positions (Database)")
+        render_position_summary(kite)
+    
+    # Show Live Spreads from Zerodha
+    elif position_filter == "Spreads (Grouped)":
         if trade_mode == "LIVE" and kite:
             render_live_positions_summary(kite)
-        elif position_filter == "Live Only (Zerodha)":
+        else:
+            st.warning("⚠️ Switch to LIVE mode to view Zerodha spread positions")
+    
+    elif position_filter == "Live Only (Zerodha)":
+        if trade_mode == "LIVE" and kite:
+            render_all_positions_table(kite)
+        else:
             st.warning("⚠️ Switch to LIVE mode to view Zerodha positions")
-        
-        if position_filter == "Both":
-            st.divider()
     
     # Show Tracked Positions (Database)
-    if position_filter in ["Both", "Tracked Only (Database)"]:
+    elif position_filter == "Tracked Only (Database)":
         st.markdown("### 📊 Tracked Positions (Database)")
         render_position_summary(kite)
 

@@ -11,6 +11,7 @@ from datetime import datetime
 import streamlit as st
 import pandas as pd
 
+import config
 from ui.app import get_kite_client, st
 from ui.utils.data_utils import (
     get_open_trades,
@@ -21,6 +22,7 @@ from ui.utils.data_utils import (
     get_quotes,
     calculate_spread_pnl,
 )
+from ui.utils.symbol_utils import get_all_trade_symbols
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +39,62 @@ def render_emergency_stop():
             use_container_width=True,
             help="Click to cancel all pending orders and square off all positions"
         ):
-            # TODO: Implement actual emergency stop logic
-            # This should:
-            # 1. Cancel all pending orders via Kite API
-            # 2. Square off all open positions
-            # 3. Update bot status to STOPPED
-            st.session_state.bot_status = "STOPPED"
-            st.error("🚨 EMERGENCY STOP TRIGGERED! All positions will be squared off.")
-            st.rerun()
+            try:
+                # Get Kite client
+                kite = get_kite_client()
+                
+                if not kite:
+                    st.error("❌ Failed to connect to Kite. Cannot execute emergency stop.")
+                else:
+                    # Get open trades
+                    from ui.utils.data_utils import get_open_trades, get_quotes
+                    open_trades = get_open_trades()
+                    
+                    if not open_trades:
+                        st.info("No open positions to close.")
+                    else:
+                        # Use utility to get all trade symbols
+                        from ui.utils.symbol_utils import get_all_trade_symbols
+                        trade_symbols = get_all_trade_symbols(open_trades)
+                        
+                        # Fetch current quotes
+                        quotes = get_quotes(kite, trade_symbols) if trade_symbols else {}
+                        
+                        # Close each trade
+                        from watchdog.exits import ExitManager
+                        exit_manager = ExitManager(kite)
+                        closed_count = 0
+                        
+                        for trade in open_trades:
+                            try:
+                                # Find the short and long symbols for this trade
+                                short_key = None
+                                long_key = None
+                                for sym in trade_symbols:
+                                    if f"{trade['symbol']}" in sym and f"{int(trade['short_strike'])}" in sym:
+                                        short_key = sym
+                                    elif f"{trade['symbol']}" in sym and f"{int(trade['long_strike'])}" in sym:
+                                        long_key = sym
+                                
+                                if short_key and long_key and short_key in quotes and long_key in quotes:
+                                    short_ltp = quotes[short_key].get('last_price', 0)
+                                    long_ltp = quotes[long_key].get('last_price', 0)
+                                    
+                                    # Close the trade
+                                    exit_manager.close_trade(trade, "EMERGENCY", short_ltp, long_ltp)
+                                    closed_count += 1
+                                    logger.info(f"Emergency stop closed trade {trade.get('trade_id', 'unknown')} for {trade['symbol']}")
+                            except Exception as e:
+                                logger.error(f"Failed to close trade {trade.get('trade_id', 'unknown')}: {e}")
+                        
+                        st.session_state.bot_status = "STOPPED"
+                        st.error(f"🚨 EMERGENCY STOP TRIGGERED! Closed {closed_count} positions.")
+                        logger.critical(f"EMERGENCY STOP: {closed_count} positions closed")
+                        st.rerun()
+                        
+            except Exception as e:
+                logger.error(f"Emergency stop failed: {e}")
+                st.error(f"❌ Emergency stop failed: {str(e)}")
     
     with col2:
         st.warning(
@@ -64,15 +114,16 @@ def render_capital_health(kite):
             total_capital = margins.get('total', 0) + margins.get('used', 0)
             used_margin = margins.get('used', 0)
             available = margins.get('available', 0)
-        except:
-            # Fallback to default values
-            total_capital = 1_000_000
+        except (KeyError, TypeError, AttributeError) as e:
+            logger.warning(f"Failed to fetch margins from Kite: {e}. Using default values.")
+            # Fallback to config values
+            total_capital = config.TOTAL_CAPITAL
             used_margin = 0
-            available = 1_000_000
+            available = config.TOTAL_CAPITAL
     else:
-        total_capital = 1_000_000
+        total_capital = config.TOTAL_CAPITAL
         used_margin = 0
-        available = 1_000_000
+        available = config.TOTAL_CAPITAL
     
     col1, col2, col3 = st.columns(3)
     
@@ -152,26 +203,17 @@ def render_active_trades(kite):
     
     # Fetch current prices for P&L calculation
     if kite and open_trades:
-        # Build symbol list
-        trade_symbols = []
-        for trade in open_trades:
-            try:
-                from datetime import date
-                exp_date = datetime.strptime(trade['expiry'], "%Y-%m-%d").date()
-            except:
-                exp_date = date.today()
-            
-            yy = str(exp_date.year)[-2:]
-            mon = exp_date.strftime("%b").upper()
-            leg_type = "PE" if "PUT" in trade['strategy'] else "CE"
-            
-            short_sym = f"NFO:{trade['symbol']}{yy}{mon}{int(trade['short_strike'])}{leg_type}"
-            long_sym = f"NFO:{trade['symbol']}{yy}{mon}{int(trade['long_strike'])}{leg_type}"
-            trade_symbols.extend([short_sym, long_sym])
+        # Use utility function to get all trade symbols
+        try:
+            trade_symbols = get_all_trade_symbols(open_trades)
+        except Exception as e:
+            logger.warning(f"Failed to get trade symbols: {e}. Using empty list.")
+            trade_symbols = []
         
         try:
             quotes = get_quotes(kite, trade_symbols)
-        except:
+        except (KeyError, TypeError, AttributeError) as e:
+            logger.warning(f"Failed to fetch quotes: {e}. Using empty quotes.")
             quotes = {}
     else:
         quotes = {}

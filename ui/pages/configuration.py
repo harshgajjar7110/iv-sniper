@@ -20,6 +20,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import config
+from db.config_store import (
+    save_int_setting, save_float_setting, save_bool_setting,
+    load_int_setting, load_float_setting, load_bool_setting,
+    load_all_settings
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +55,23 @@ def render_general_settings():
         )
     
     if st.button("💾 Save General Settings", type="primary"):
-        # TODO: Save to config or database
-        st.success("✅ General settings saved!")
+        # Save settings to database
+        success1 = save_int_setting(
+            "capital_risk_limit_pct",
+            max_capital_per_trade,
+            "Maximum percentage of capital to risk per trade"
+        )
+        success2 = save_int_setting(
+            "max_total_usage_pct",
+            max_total_usage,
+            "Maximum percentage of capital to use across all trades"
+        )
+        
+        if success1 and success2:
+            st.success("✅ General settings saved successfully!")
+            logger.info(f"General settings saved: risk={max_capital_per_trade}%, usage={max_total_usage}%")
+        else:
+            st.error("❌ Failed to save general settings.")
 
 
 def render_scanner_parameters():
@@ -89,8 +109,28 @@ def render_scanner_parameters():
         )
     
     if st.button("💾 Save Scanner Settings"):
-        # TODO: Save to config or database
-        st.success("✅ Scanner settings saved!")
+        # Save scanner settings to database
+        success1 = save_int_setting(
+            "hv_rank_threshold",
+            iv_rank_threshold,
+            "Minimum HV Rank % to qualify"
+        )
+        success2 = save_int_setting(
+            "ivp_threshold",
+            ivp_threshold,
+            "Minimum IV Percentile to qualify"
+        )
+        success3 = save_int_setting(
+            "min_days_to_expiry",
+            min_days_to_expiry,
+            "Minimum days to expiry to avoid weekly risk"
+        )
+        
+        if success1 and success2 and success3:
+            st.success("✅ Scanner settings saved successfully!")
+            logger.info(f"Scanner settings saved: iv_rank={iv_rank_threshold}%, ivp={ivp_threshold}%, expiry_days={min_days_to_expiry}")
+        else:
+            st.error("❌ Failed to save scanner settings.")
 
 
 def render_exit_rules():
@@ -136,12 +176,41 @@ def render_exit_rules():
         )
     
     if st.button("💾 Save Exit Rules"):
-        # TODO: Save to config or database
-        st.success("✅ Exit rules saved!")
+        # Save exit rules to database
+        success1 = save_int_setting(
+            "profit_target_pct",
+            profit_target_pct,
+            "Exit when profit reaches this percentage of credit received"
+        )
+        success2 = save_float_setting(
+            "stop_loss_multiplier",
+            stop_loss_multiplier,
+            "Exit when loss reaches this multiple of credit received"
+        )
+        success3 = save_bool_setting(
+            "auto_square_off",
+            auto_square_off,
+            "Automatically square off when profit target is reached"
+        )
+        success4 = save_bool_setting(
+            "force_exit_thursday",
+            force_exit_thursday,
+            "Square off all positions on Thursday 2:30 PM"
+        )
+        
+        if success1 and success2 and success3 and success4:
+            st.success("✅ Exit rules saved successfully!")
+            logger.info(f"Exit rules saved: target={profit_target_pct}%, sl={stop_loss_multiplier}x, auto_sq={auto_square_off}, thu_exit={force_exit_thursday}")
+        else:
+            st.error("❌ Failed to save exit rules.")
 
 
 def render_danger_zone():
     """Render danger zone with kill switches."""
+    from ui.app import get_kite_client
+    from ui.utils.data_utils import get_open_trades, get_quotes
+    from watchdog.exits import ExitManager
+    from datetime import datetime
     
     st.markdown("### ⚠️ DANGER ZONE")
     st.error("These actions are irreversible! Use with caution.")
@@ -169,15 +238,76 @@ def render_danger_zone():
         )
         
         if kill_switch_btn:
-            # Show confirmation dialog
-            st.error("🚨 KILL SWITCH TRIGGERED!")
-            st.error("All positions will be squared off immediately!")
-            # TODO: Implement actual kill switch logic
-            # 1. Cancel all pending orders via Kite API
-            # 2. Square off all positions
-            # 3. Update database
-            st.session_state.bot_status = "STOPPED"
-            st.rerun()
+            try:
+                # Get Kite client
+                kite = get_kite_client()
+                
+                if not kite:
+                    st.error("❌ Failed to connect to Kite. Cannot execute kill switch.")
+                else:
+                    # Get open trades
+                    open_trades = get_open_trades()
+                    
+                    if not open_trades:
+                        st.info("No open positions to close.")
+                    else:
+                        # Build trade symbols
+                        trade_symbols = []
+                        for trade in open_trades:
+                            try:
+                                exp_date = datetime.strptime(trade['expiry'], "%Y-%m-%d").date()
+                            except (ValueError, TypeError):
+                                exp_date = datetime.now().date()
+                            
+                            yy = str(exp_date.year)[-2:]
+                            mon = exp_date.strftime("%b").upper()
+                            leg_type = "PE" if "PUT" in trade['strategy'] else "CE"
+                            
+                            short_sym = f"NFO:{trade['symbol']}{yy}{mon}{int(trade['short_strike'])}{leg_type}"
+                            long_sym = f"NFO:{trade['symbol']}{yy}{mon}{int(trade['long_strike'])}{leg_type}"
+                            trade_symbols.extend([short_sym, long_sym])
+                        
+                        # Fetch current quotes
+                        quotes = get_quotes(kite, trade_symbols) if trade_symbols else {}
+                        
+                        # Close each trade
+                        exit_manager = ExitManager(kite)
+                        closed_count = 0
+                        
+                        for trade in open_trades:
+                            try:
+                                # Get current prices for the spread
+                                trade_id = trade['trade_id']
+                                syms = trade_symbols[trade_symbols.index(f"NFO:{trade['symbol']}{str(datetime.strptime(trade['expiry'], '%Y-%m-%d').date().year)[-2:]}{datetime.strptime(trade['expiry'], '%Y-%m-%d').date().strftime('%b').upper()}{int(trade['short_strike'])}{'PE' if 'PUT' in trade['strategy'] else 'CE'}"):]
+                                
+                                # Find the short and long symbols
+                                short_key = None
+                                long_key = None
+                                for sym in trade_symbols:
+                                    if f"{trade['symbol']}" in sym and f"{int(trade['short_strike'])}" in sym:
+                                        short_key = sym
+                                    elif f"{trade['symbol']}" in sym and f"{int(trade['long_strike'])}" in sym:
+                                        long_key = sym
+                                
+                                if short_key and long_key and short_key in quotes and long_key in quotes:
+                                    short_ltp = quotes[short_key].get('last_price', 0)
+                                    long_ltp = quotes[long_key].get('last_price', 0)
+                                    
+                                    # Close the trade with MANUAL exit reason
+                                    exit_manager.close_trade(trade, "MANUAL", short_ltp, long_ltp)
+                                    closed_count += 1
+                                    logger.info(f"Killed trade {trade_id} for {trade['symbol']}")
+                            except Exception as e:
+                                logger.error(f"Failed to close trade {trade.get('trade_id', 'unknown')}: {e}")
+                        
+                        st.session_state.bot_status = "STOPPED"
+                        st.success(f"✅ Kill switch executed! Closed {closed_count} positions.")
+                        logger.critical(f"KILL SWITCH TRIGGERED: {closed_count} positions closed")
+                        st.rerun()
+                        
+            except Exception as e:
+                logger.error(f"Kill switch failed: {e}")
+                st.error(f"❌ Kill switch failed: {str(e)}")
     
     st.warning(
         "⚠️ Warning: The Kill Switch will close all positions at market price. "

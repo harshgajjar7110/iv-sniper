@@ -68,6 +68,9 @@ class OrderManager:
         
         if not is_paper:
             # ── Live Execution ──
+            long_order_id = None
+            short_order_id = None
+            
             try:
                 # 1. Place Long Leg first (Hedge) for margin benefit
                 long_order_id = self._place_leg(
@@ -91,8 +94,28 @@ class OrderManager:
                 
             except Exception as e:
                 logger.error(f"Live order placement failed: {e}")
-                # TODO: If long placed but short failed, we have a naked buy. 
-                # Should reverse long? For now, just log error.
+                
+                # ROLLBACK: If long leg was placed but short leg failed, cancel the long leg
+                if long_order_id:
+                    rollback_success = self._rollback_long_leg(long_order_id, long_sym, lot_size)
+                    if not rollback_success:
+                        # Critical: Log alert for manual intervention
+                        logger.critical(
+                            f"CRITICAL: Failed to rollback long leg order {long_order_id} for {symbol}. "
+                            f"Manual intervention required to close naked position!"
+                        )
+                        # Log the failed trade with ERROR status for tracking
+                        self._log_failed_trade(
+                            trade_id=trade_id,
+                            symbol=symbol,
+                            strategy=strategy,
+                            error_message=f"Partial execution failure. Long order {long_order_id} may be open.",
+                            short_strike=short_strike,
+                            long_strike=long_strike,
+                            lot_size=lot_size,
+                            spread=spread,
+                            timestamp=timestamp
+                        )
                 return False
 
         # ── Log to Database ──
@@ -173,3 +196,59 @@ class OrderManager:
         })
         
         return orders
+
+    def _rollback_long_leg(self, order_id: str, symbol: str, quantity: int) -> bool:
+        """
+        Attempt to cancel a long leg order to prevent naked position.
+        
+        Returns True if successful, False otherwise.
+        """
+        try:
+            logger.warning(f"Attempting to cancel long leg order {order_id} for {symbol}")
+            self.kite.cancel_order(order_id=order_id)
+            logger.info(f"Successfully cancelled long leg order {order_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to cancel long leg order {order_id}: {e}")
+            return False
+
+    def _log_failed_trade(
+        self,
+        trade_id: str,
+        symbol: str,
+        strategy: str,
+        error_message: str,
+        short_strike: float,
+        long_strike: float,
+        lot_size: int,
+        spread: dict,
+        timestamp: str
+    ) -> None:
+        """
+        Log a failed trade to the database for tracking and manual intervention.
+        """
+        try:
+            with get_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, symbol, strategy, status, mode,
+                        entry_time, short_strike, long_strike, expiry, lot_size,
+                        entry_short_pr, entry_long_pr, net_credit,
+                        sl_price, target_price,
+                        short_order_id, long_order_id,
+                        exit_time, exit_reason, pnl
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        trade_id, symbol, strategy, "ERROR", "LIVE",
+                        timestamp, short_strike, long_strike, str(spread.get("expiry", "")), lot_size,
+                        spread.get("short_premium", 0), spread.get("long_premium", 0), spread.get("net_credit", 0),
+                        spread.get("sl_premium", 0), spread.get("target_premium", 0),
+                        "FAILED", error_message,
+                        timestamp, "ERROR", error_message, 0  # pnl = 0 for failed trades
+                    )
+                )
+            logger.info(f"Failed trade {trade_id} logged to DB for manual intervention.")
+        except Exception as e:
+            logger.critical(f"CRITICAL: Failed to log failed trade to DB: {e}. Manual tracking required!")
