@@ -365,6 +365,9 @@ def _run_scan_with_live_logs(min_ivp: float) -> None:
     
     # Create thread-safe shared data structures for communication between threads
     # These will be accessed from the background thread and read by the main thread
+    # REVIEW: This logic is quite complex and mixes UI state management with backend execution.
+    # Consider extracting this into a dedicated 'ScanService' or similar to handle the background processing
+    # and state synchronization, making the UI component cleaner and more testable.
     shared_logs = []
     shared_progress = {"current": 0, "total": 0, "qualified": 0}
     shared_results = {"results": None, "scan_id": None, "error": None, "done": False}

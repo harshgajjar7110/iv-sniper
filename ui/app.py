@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 def init_session_state():
     """Initialize Streamlit session state variables."""
+    # REVIEW: Consider moving session state initialization to a dedicated utility module (e.g., ui/utils/state_manager.py)
+    # to keep app.py clean and centralized.
     
     # Bot status
     if 'bot_status' not in st.session_state:
@@ -64,6 +66,8 @@ def init_session_state():
 
 def get_kite_client() -> KiteClient:
     """Get or create Kite client with proper error handling."""
+    # REVIEW: Implement a retry mechanism or a more robust connection check here.
+    # Also, consider caching the client instance or using a singleton pattern if not already handled by KiteClient.
     if st.session_state.kite_client is None:
         try:
             st.session_state.kite_client = KiteClient()

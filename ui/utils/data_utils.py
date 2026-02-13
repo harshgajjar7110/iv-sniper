@@ -131,6 +131,7 @@ def get_capital_info() -> dict:
 def get_account_margins(kite: KiteClient) -> dict:
     """Fetch account margins from Kite."""
     try:
+        # REVIEW: Add caching here to prevent hitting rate limits if this is called frequently.
         margins = kite.margins()
         return {
             'total': margins.get('total', {}).get('available_balance', 0),
