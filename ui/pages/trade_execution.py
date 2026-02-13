@@ -111,6 +111,7 @@ def render_order_breakdown(candidate: dict, analysis: dict):
     # Max Loss = (Strike Difference * Lot Size) - Net Credit
     
     # Placeholder premiums (would be fetched from Kite)
+    # REVIEW: Fetch real-time premiums from Kite API here instead of using hardcoded placeholders.
     short_premium_placeholder = 45.0  # ₹45
     long_premium_placeholder = 20.0   # ₹20
     
@@ -186,6 +187,7 @@ def render_margin_check(kite):
         
         # Required margin would be calculated from the spread
         # For now, use a placeholder
+        # REVIEW: Calculate the actual required margin using Kite's Basket Margin API.
         required_margin = 28000  # ₹28,000 for a typical spread
         available = margins.get('available', 0)
         

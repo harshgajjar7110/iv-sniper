@@ -138,6 +138,7 @@ def render_position_card(trade: dict, quotes: dict):
                 use_container_width=True
             )
             
+            # REVIEW: Implement logic to update exit targets in the database.
             if modify_btn:
                 st.info("Modify exit target - coming soon!")
 
@@ -343,6 +344,8 @@ def render_all_positions_table(kite):
         st.divider()
         
         # Build DataFrame for the positions table
+        # REVIEW: Centralize P&L calculation logic in ui/utils/data_utils.py to avoid duplication
+        # between here and calculate_spread_pnl.
         rows = []
         for pos in all_positions:
             pnl_val = pos.get('pnl', 0)

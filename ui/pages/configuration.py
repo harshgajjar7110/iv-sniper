@@ -54,6 +54,8 @@ def render_general_settings():
             help="Maximum percentage of total capital to use across all open trades"
         )
     
+    # REVIEW: Group these settings updates into a single atomic transaction or batch operation
+    # to prevent partial updates.
     if st.button("💾 Save General Settings", type="primary"):
         # Save settings to database
         success1 = save_int_setting(
