@@ -58,7 +58,7 @@ def render_scanner_settings():
     with col3:
         refresh_btn = st.button(
             "🔄 Refresh Scanner",
-            use_container_width=True,
+            width="stretch",
             type="primary"
         )
     
@@ -202,14 +202,20 @@ def render_opportunity_card(candidate: dict, analysis: dict = None):
             view_chart_btn = st.button(
                 f"📈 View Chart",
                 key=f"chart_{candidate['symbol']}",
-                use_container_width=True
+                width="stretch"
             )
+            
+            if view_chart_btn:
+                # Store selected stock for visual analyzer
+                st.session_state.selected_stock = candidate
+                st.session_state.visual_analyzer_symbol = candidate['symbol']
+                st.switch_page("?page=Visual Analyzer")
         
         with col2:
             load_trade_btn = st.button(
                 f"🎯 Load Trade",
                 key=f"load_{candidate['symbol']}",
-                use_container_width=True,
+                width="stretch",
                 type="primary"
             )
             

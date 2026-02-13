@@ -36,7 +36,7 @@ def render_emergency_stop():
         if st.button(
             "⛔ EMERGENCY STOP",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             help="Click to cancel all pending orders and square off all positions"
         ):
             try:
@@ -61,7 +61,7 @@ def render_emergency_stop():
                         quotes = get_quotes(kite, trade_symbols) if trade_symbols else {}
                         
                         # Close each trade
-                        from watchdog.exits import ExitManager
+                        from position_watchdog.exits import ExitManager
                         exit_manager = ExitManager(kite)
                         closed_count = 0
                         
@@ -244,7 +244,7 @@ def render_active_trades(kite):
         df = pd.DataFrame(data)
         st.dataframe(
             df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
     else:

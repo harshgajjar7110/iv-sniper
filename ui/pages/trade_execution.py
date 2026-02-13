@@ -75,7 +75,7 @@ def render_volume_profile_chart(analysis: dict):
         yaxis=dict(autorange="reversed")  # Price increases going up
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def render_order_breakdown(candidate: dict, analysis: dict):
@@ -261,7 +261,7 @@ def render_trade_actions(candidate: dict, analysis: dict):
     with col1:
         market_btn = st.button(
             "📤 Place Market Order",
-            use_container_width=True,
+            width="stretch",
             type="primary",
             disabled=(trade_mode == "PAPER")
         )
@@ -297,7 +297,7 @@ def render_trade_actions(candidate: dict, analysis: dict):
     with col2:
         limit_btn = st.button(
             "📊 Place Limit Order (Mid-Price)",
-            use_container_width=True,
+            width="stretch",
             disabled=(trade_mode == "PAPER")
         )
         

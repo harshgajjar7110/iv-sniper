@@ -123,7 +123,7 @@ def render_position_card(trade: dict, quotes: dict):
             square_off_btn = st.button(
                 f"🔴 Square Off Now (Market)",
                 key=f"squareoff_{trade['trade_id']}",
-                use_container_width=True,
+                width="stretch",
                 type="primary"
             )
             
@@ -135,7 +135,7 @@ def render_position_card(trade: dict, quotes: dict):
             modify_btn = st.button(
                 f"⚙️ Modify Exit Target",
                 key=f"modify_{trade['trade_id']}",
-                use_container_width=True
+                width="stretch"
             )
             
             if modify_btn:
@@ -381,7 +381,7 @@ def render_all_positions_table(kite):
         
         pnl_columns = ['Current P&L', 'Realised', 'Unrealised', 'M2M', 'P&L']
         
-        styled_df = df.style.applymap(
+        styled_df = df.style.map(
             color_pnl,
             subset=pnl_columns
         ).format({
@@ -396,7 +396,7 @@ def render_all_positions_table(kite):
         
         st.dataframe(
             styled_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=min(len(df) * 40 + 50, 600),
         )
@@ -449,7 +449,7 @@ def render_all_positions_table(kite):
         if not summary_df.empty:
             summary_df = summary_df.sort_values('Total P&L', ascending=False)
             
-            styled_summary = summary_df.style.applymap(
+            styled_summary = summary_df.style.map(
                 color_pnl,
                 subset=['Current P&L', 'Realised', 'Unrealised', 'M2M', 'Total P&L']
             ).format({
@@ -462,7 +462,7 @@ def render_all_positions_table(kite):
             
             st.dataframe(
                 styled_summary,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
         

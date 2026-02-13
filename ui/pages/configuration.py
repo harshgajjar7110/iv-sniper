@@ -209,7 +209,7 @@ def render_danger_zone():
     """Render danger zone with kill switches."""
     from ui.app import get_kite_client
     from ui.utils.data_utils import get_open_trades, get_quotes
-    from watchdog.exits import ExitManager
+    from position_watchdog.exits import ExitManager
     from datetime import datetime
     
     st.markdown("### ⚠️ DANGER ZONE")
@@ -220,7 +220,7 @@ def render_danger_zone():
     with col1:
         disable_bot_btn = st.button(
             "🛑 DISABLE BOT (Stop Scanning)",
-            use_container_width=True,
+            width="stretch",
             help="Stop the bot from scanning for new opportunities"
         )
         
@@ -232,7 +232,7 @@ def render_danger_zone():
     with col2:
         kill_switch_btn = st.button(
             "💣 KILL SWITCH (Square Off Everything)",
-            use_container_width=True,
+            width="stretch",
             type="primary",
             help="Immediately square off ALL open positions and cancel all pending orders"
         )

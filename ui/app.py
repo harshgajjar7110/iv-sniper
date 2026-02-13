@@ -116,7 +116,7 @@ def render_sidebar():
         st.markdown("### 📍 Navigation")
         page = st.radio(
             "Go to",
-            ["Dashboard", "Scanner", "Trade Execution", "Position Monitor", "Configuration"],
+            ["Dashboard", "Scanner", "Visual Analyzer", "Trade Execution", "Position Monitor", "Configuration"],
             label_visibility="collapsed"
         )
         
@@ -173,15 +173,14 @@ def main():
     # Initialize session state
     init_session_state()
     
-    # Auto-refresh for real-time data (except on Configuration page)
-    # Only auto-refresh on pages that need live data
-    current_page_check = st.session_state.get('_current_page', 'Dashboard')
-    if current_page_check != "Configuration":
-        st_autorefresh(interval=st.session_state.refresh_interval * 1000, key="data_refresh")
-    
-    # Render sidebar and get current page
+    # Render sidebar and get current page first
     current_page = render_sidebar()
     st.session_state['_current_page'] = current_page
+    
+    # Auto-refresh for real-time data (only on pages that need it)
+    # Dashboard and Position Monitor need auto-refresh, but not Scanner/Visual Analyzer/Trade Execution
+    if current_page in ["Dashboard", "Position Monitor"]:
+        st_autorefresh(interval=st.session_state.refresh_interval * 1000, key="data_refresh")
     
     # Import pages dynamically to avoid loading all at once
     if current_page == "Dashboard":
@@ -190,6 +189,9 @@ def main():
     elif current_page == "Scanner":
         from pages.scanner import render_scanner
         render_scanner()
+    elif current_page == "Visual Analyzer":
+        from pages.visual_analyzer import render_visual_analyzer
+        render_visual_analyzer()
     elif current_page == "Trade Execution":
         from pages.trade_execution import render_trade_execution
         render_trade_execution()

@@ -13,7 +13,7 @@ import schedule
 import sys
 
 from core.kite_client import KiteClient
-from watchdog.monitor import run_watchdog
+from position_watchdog.monitor import run_watchdog
 import config
 
 # Config logging

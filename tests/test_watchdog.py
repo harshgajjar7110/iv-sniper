@@ -13,7 +13,7 @@ import time
 
 from db.schema import initialise_database
 from db.connection import DB_PATH
-from watchdog.monitor import run_watchdog
+from position_watchdog.monitor import run_watchdog
 import config
 
 class TestWatchdog(unittest.TestCase):

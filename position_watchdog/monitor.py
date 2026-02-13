@@ -8,7 +8,7 @@ from typing import Any
 
 from core.kite_client import KiteClient
 from db.connection import get_connection
-from watchdog.exits import ExitManager
+from position_watchdog.exits import ExitManager
 from ui.utils.symbol_utils import get_trade_symbols_dict
 import config
 
