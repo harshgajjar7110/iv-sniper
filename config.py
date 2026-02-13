@@ -78,3 +78,11 @@ MAX_API_RETRIES = 5
 API_BACKOFF_BASE_SECONDS = 2         # Exponential backoff base
 BID_ASK_SPREAD_LIMIT_PCT = 5         # Skip if spread > 5%
 NIFTY_CRASH_THRESHOLD_PCT = 2        # Kill switch if Nifty down > 2%
+
+# ──────────────────────────────────────────────
+# Scanner Rate Limiting (to honor server limits)
+# ──────────────────────────────────────────────
+SCANNER_RATE_LIMIT_ENABLED = True    # Enable random delays between API calls
+SCANNER_MIN_DELAY_SECONDS = 1.0      # Minimum delay between requests
+SCANNER_MAX_DELAY_SECONDS = 2.0      # Maximum delay between requests
+SCANNER_THREAD_POOL_SIZE = 3         # Reduced thread pool for conservative rate limiting

@@ -5,6 +5,7 @@ Tables
 ------
 iv_history  — Daily IV/HV snapshots per stock symbol.
 trade_log   — Full lifecycle of every bot trade.
+scan_results — Saved scanner results with scan IDs.
 
 Run this module directly to initialise the database:
     python -m db.schema
@@ -63,6 +64,20 @@ CREATE TABLE IF NOT EXISTS trade_log (
 );
 """
 
+_CREATE_SCAN_RESULTS = """
+CREATE TABLE IF NOT EXISTS scan_results (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id         TEXT    NOT NULL UNIQUE,       -- UUID for the scan
+    scan_time       TEXT    NOT NULL,              -- ISO-8601 datetime when scan was run
+    min_ivp         REAL    NOT NULL,              -- IVP threshold used
+    min_hv_rank     REAL    NOT NULL,              -- HV Rank threshold used
+    total_scanned   INTEGER NOT NULL,              -- Total stocks scanned
+    candidates_found INTEGER NOT NULL,            -- Number of qualifying candidates
+    -- Candidate details (JSON stored as TEXT)
+    candidates      TEXT    NOT NULL               -- JSON array of candidate objects
+);
+"""
+
 _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_iv_symbol ON iv_history(stock_symbol);",
     "CREATE INDEX IF NOT EXISTS idx_iv_ts     ON iv_history(timestamp);",
@@ -80,6 +95,7 @@ def initialise_database() -> None:
     with get_connection() as conn:
         conn.execute(_CREATE_IV_HISTORY)
         conn.execute(_CREATE_TRADE_LOG)
+        conn.execute(_CREATE_SCAN_RESULTS)
         for idx_sql in _CREATE_INDEXES:
             conn.execute(idx_sql)
     print("[db] Database initialised successfully.")

@@ -9,6 +9,7 @@ Pipeline
    b. Filter by score threshold.
    c. Detect trend (Bullish / Bearish via 50-day EMA).
 3. Return the top 3–5 candidates sorted by score (descending).
+4. Save results to database with unique scan ID.
 
 Usage:
     from scanner.scanner import run_scan
@@ -22,10 +23,14 @@ Usage:
     # ]
 """
 
+import json
 import logging
 import random
 import time
-from typing import Any
+import threading
+from datetime import datetime
+from typing import Any, Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import config
 from core.instrument_master import get_fno_stocks, build_nse_token_map
@@ -40,6 +45,20 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────
 MAX_CANDIDATES = 5       # Max stocks to return from the scan
 MIN_SCORE = config.IVP_THRESHOLD   # Minimum IVP / HV Rank to qualify
+
+# Rate limiting configuration (loaded from config)
+SCANNER_RATE_LIMIT_ENABLED = getattr(config, 'SCANNER_RATE_LIMIT_ENABLED', True)
+SCANNER_MIN_DELAY = getattr(config, 'SCANNER_MIN_DELAY_SECONDS', 1.0)
+SCANNER_MAX_DELAY = getattr(config, 'SCANNER_MAX_DELAY_SECONDS', 2.0)
+SCANNER_THREAD_POOL_SIZE = getattr(config, 'SCANNER_THREAD_POOL_SIZE', 3)
+
+
+def _apply_rate_limit_delay() -> None:
+    """Apply a random delay to honor rate limits on the server side."""
+    if SCANNER_RATE_LIMIT_ENABLED:
+        delay = random.uniform(SCANNER_MIN_DELAY, SCANNER_MAX_DELAY)
+        logger.debug("Rate limit delay: %.2f seconds", delay)
+        time.sleep(delay)
 
 
 def _validate_token(kite: KiteClient) -> bool:
@@ -56,7 +75,9 @@ def run_scan(
     kite: KiteClient | None = None,
     max_candidates: int = MAX_CANDIDATES,
     min_score: float = MIN_SCORE,
-) -> list[dict[str, Any]]:
+    save_to_db: bool = True,
+    progress_callback: Callable[[int, int, str, int], None] | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
     """
     Execute the full scanner pipeline and return filtered candidates.
 
@@ -68,11 +89,22 @@ def run_scan(
         Maximum number of candidates to return (default: 5).
     min_score : float
         Minimum IVP / HV Rank to pass the filter (default: from config).
+    save_to_db : bool
+        Whether to save results to database (default: True).
+    progress_callback : Callable or None
+        Optional callback for progress updates. Called with:
+        - current: int — number of stocks processed
+        - total: int — total stocks to process
+        - message: str — current status message
+        - qualified: int — number of stocks that qualified
 
     Returns
     -------
-    list[dict]
-        Each dict contains:
+    tuple[list[dict], str | None]
+        First element: list of candidate dictionaries.
+        Second element: scan_id if saved to DB, None otherwise.
+        
+        Each candidate dict contains:
         - symbol       : str     — stock symbol
         - score        : float   — IVP or HV Rank (0–100)
         - method       : str     — 'IVP' or 'HV_RANK'
@@ -84,40 +116,75 @@ def run_scan(
         Sorted by score descending. Empty list if nothing qualifies.
     """
     logger.info("═══ Starting Scanner Run ═══")
+    scan_start_time = datetime.now()
+    total_scanned = 0
+    scan_id = None
 
     if kite is None:
         kite = KiteClient()
 
     if not _validate_token(kite):
         logger.error("Cannot run scanner — invalid token.")
-        return []
+        if progress_callback:
+            progress_callback(0, 0, "Error: Invalid token", 0)
+        return [], None
 
     # ── Step 1: Fetch instrument masters ──
+    if progress_callback:
+        progress_callback(0, 0, "Fetching F&O instrument list...", 0)
+    
     fno_stocks = get_fno_stocks(kite)
-    time.sleep(random.uniform(0.3, 0.8))
+    _apply_rate_limit_delay()
     nse_token_map = build_nse_token_map(kite)
+    _apply_rate_limit_delay()
 
     scored: list[dict[str, Any]] = []
     
+    # Filter out index symbols
+    stock_list = [
+        stock for stock in fno_stocks
+        if stock["symbol"] not in (
+            "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"
+        )
+    ]
+    total_scanned = len(stock_list)
+    
     logger.info(
-        "Scanning %d F&O stocks (min score: %.0f%%) in PARALLEL...",
-        len(fno_stocks),
+        "Scanning %d F&O stocks (min score: %.0f%%) with rate limiting (%.1f-%.1fs delay)...",
+        total_scanned,
         min_score,
+        SCANNER_MIN_DELAY,
+        SCANNER_MAX_DELAY,
     )
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    # Thread-safe progress tracking
+    progress_lock = threading.Lock()
+    processed_count = 0
+    qualified_count = 0
 
-    # Parallel processing with max_workers=10 (conservative for rate limits)
-    # Kite Connect usually allows ~3 req/sec, but checks are lightweight.
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    def update_progress(symbol: str, qualified: bool = False) -> None:
+        """Update progress counter and call callback if provided."""
+        nonlocal processed_count, qualified_count
+        if progress_callback:
+            with progress_lock:
+                processed_count += 1
+                if qualified:
+                    qualified_count += 1
+                progress_callback(
+                    processed_count,
+                    total_scanned,
+                    f"Processing {symbol}...",
+                    qualified_count
+                )
+
+    # Parallel processing with reduced workers for conservative rate limits
+    # Using reduced thread pool size to avoid overwhelming the API
+    with ThreadPoolExecutor(max_workers=SCANNER_THREAD_POOL_SIZE) as executor:
         futures = {
             executor.submit(
                 _process_stock, kite, stock["symbol"], nse_token_map, min_score
             ): stock["symbol"]
-            for stock in fno_stocks
-            if stock["symbol"] not in (
-                "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"
-            )
+            for stock in stock_list
         }
 
         for future in as_completed(futures):
@@ -126,20 +193,52 @@ def run_scan(
                 result = future.result()
                 if result:
                     scored.append(result)
+                    update_progress(symbol, qualified=True)
+                else:
+                    update_progress(symbol, qualified=False)
             except Exception as exc:
                 logger.error("Error processing %s: %s", symbol, exc)
+                update_progress(symbol, qualified=False)
 
     # ── Step 3: Sort and truncate ──
+    if progress_callback:
+        progress_callback(total_scanned, total_scanned, "Sorting results...", len(scored))
+    
     scored.sort(key=lambda c: c["score"], reverse=True)
     top = scored[:max_candidates]
 
+    # ── Step 4: Save results to database ──
+    if save_to_db and top:
+        try:
+            from db.scan_store import save_scan_result
+            scan_id = save_scan_result(
+                candidates=top,
+                min_ivp=min_score,
+                min_hv_rank=min_score,
+                total_scanned=total_scanned,
+            )
+            logger.info("Scan results saved to database with ID: %s", scan_id)
+        except Exception as e:
+            logger.warning("Failed to save scan results to database: %s", e)
+
+    scan_duration = (datetime.now() - scan_start_time).total_seconds()
     logger.info(
-        "═══ Scan complete: %d qualified, returning top %d ═══",
+        "═══ Scan complete: %d qualified, returning top %d (scanned %d stocks in %.1fs) ═══",
         len(scored),
         len(top),
+        total_scanned,
+        scan_duration,
     )
+    
+    if progress_callback:
+        progress_callback(
+            total_scanned, 
+            total_scanned, 
+            f"Scan complete! {len(scored)} qualified, {len(top)} returned", 
+            len(scored)
+        )
 
-    return top
+    return top, scan_id
 
 
 def _process_stock(
@@ -152,8 +251,8 @@ def _process_stock(
     nse_token = nse_token_map.get(symbol)
 
     # ── Step 2a: IV Score ──
-    # Random sleep to prevent rigid thundering herd
-    time.sleep(random.uniform(0.1, 1.0))
+    # Random sleep to prevent rigid thundering herd and honor rate limits
+    _apply_rate_limit_delay()
     
     try:
         iv_result = get_iv_score(
@@ -176,6 +275,7 @@ def _process_stock(
         return None  # Silent skip
 
     # ── Step 2c: Get spot price ──
+    _apply_rate_limit_delay()
     token_str = f"NSE:{symbol}"
     try:
         ltp_data = kite.ltp([token_str])
@@ -188,6 +288,7 @@ def _process_stock(
         return None
 
     # ── Step 2d: Trend detection ──
+    _apply_rate_limit_delay()
     trend_data = {"trend": "Unknown", "ema_50": None, "spot": spot}
     if nse_token:
         try:

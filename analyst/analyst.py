@@ -41,6 +41,55 @@ from core.kite_client import KiteClient
 logger = logging.getLogger(__name__)
 
 
+def analyze_stock(
+    kite: KiteClient,
+    symbol: str,
+    nse_token_map: dict[str, int] | None = None,
+) -> dict[str, Any] | None:
+    """
+    Analyze a single stock and produce trade recommendations.
+
+    Parameters
+    ----------
+    kite : KiteClient
+        Authenticated Kite client.
+    symbol : str
+        Stock symbol to analyze.
+    nse_token_map : dict or None
+        Pre-built {symbol → instrument_token} map. If None, fetched fresh.
+
+    Returns
+    -------
+    dict or None
+        Trade recommendation dict or None if no viable trade found.
+    """
+    logger.info("═══ Analyzing single stock: %s ═══", symbol)
+
+    # First, run a quick scan to get candidate info
+    from scanner.scanner import run_scan
+
+    try:
+        candidates = run_scan(kite, max_candidates=50, min_score=0)
+        # Find our target symbol in the results
+        candidate = None
+        for c in candidates:
+            if c.get("symbol") == symbol:
+                candidate = c
+                break
+
+        if not candidate:
+            logger.warning("  Stock %s not found in scan results.", symbol)
+            return None
+
+        # Analyze this single candidate
+        results = analyze_candidates([candidate], kite, nse_token_map)
+        return results[0] if results else None
+
+    except Exception as exc:
+        logger.error("  Error analyzing %s: %s", symbol, exc)
+        return None
+
+
 def analyze_candidates(
     candidates: list[dict[str, Any]],
     kite: KiteClient,

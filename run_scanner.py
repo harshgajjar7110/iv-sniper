@@ -27,8 +27,11 @@ logging.basicConfig(
 logger = logging.getLogger("run_scanner")
 
 
-def _print_results(candidates: list[dict]) -> None:
+def _print_results(candidates: list[dict], scan_id: str | None = None) -> None:
     """Pretty-print the scan results as a formatted table."""
+    if scan_id:
+        print(f"\n  📋 Scan ID: {scan_id}")
+    
     if not candidates:
         print("\n  ⚠  No stocks passed the filter. Try lowering --min-score.\n")
         return
@@ -77,12 +80,12 @@ def main() -> None:
         args.min_score,
     )
 
-    candidates = run_scan(
+    candidates, scan_id = run_scan(
         max_candidates=args.top,
         min_score=args.min_score,
     )
 
-    _print_results(candidates)
+    _print_results(candidates, scan_id)
 
 
 if __name__ == "__main__":
