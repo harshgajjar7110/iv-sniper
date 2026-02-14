@@ -501,8 +501,172 @@ class ConfigRepository(BaseRepository):
         return affected > 0
 
 
+class ScanHistoryRepository(BaseRepository):
+    """Repository for scan_history table operations."""
+    
+    table_name = "scan_history"
+    primary_key = "id"
+    
+    # -------------------------------------------------------------------------
+    # Read Operations
+    # -------------------------------------------------------------------------
+    
+    def get_by_scan_id(self, scan_id: str) -> list[dict]:
+        """Get all records for a specific scan run."""
+        return self._fetch_all(
+            """SELECT * FROM scan_history 
+               WHERE scan_id = ? 
+               ORDER BY score DESC NULLS LAST""",
+            (scan_id,)
+        )
+    
+    def get_qualified_by_scan_id(self, scan_id: str) -> list[dict]:
+        """Get only qualified records for a specific scan run."""
+        return self._fetch_all(
+            """SELECT * FROM scan_history 
+               WHERE scan_id = ? AND qualified = 1 
+               ORDER BY score DESC""",
+            (scan_id,)
+        )
+    
+    def get_latest_scan(self) -> Optional[dict]:
+        """Get the most recent scan metadata."""
+        return self._fetch_one(
+            """SELECT scan_id, scan_time, COUNT(*) as total_stocks,
+                      SUM(qualified) as qualified_count
+               FROM scan_history 
+               GROUP BY scan_id 
+               ORDER BY scan_time DESC 
+               LIMIT 1"""
+        )
+    
+    def get_all_scans(self, limit: int = 50) -> list[dict]:
+        """Get all scan runs with summary stats."""
+        return self._fetch_all(
+            """SELECT scan_id, scan_time, COUNT(*) as total_stocks,
+                      SUM(qualified) as qualified_count,
+                      MIN(min_score_threshold) as min_score_threshold
+               FROM scan_history 
+               GROUP BY scan_id 
+               ORDER BY scan_time DESC 
+               LIMIT ?""",
+            (limit,)
+        )
+    
+    def get_symbol_history(self, symbol: str, limit: int = 30) -> list[dict]:
+        """Get scan history for a specific symbol."""
+        return self._fetch_all(
+            """SELECT * FROM scan_history 
+               WHERE symbol = ? 
+               ORDER BY scan_time DESC 
+               LIMIT ?""",
+            (symbol, limit)
+        )
+    
+    def get_recent_qualified(self, days: int = 7, limit: int = 100) -> list[dict]:
+        """Get all qualified stocks from recent scans."""
+        return self._fetch_all(
+            """SELECT * FROM scan_history 
+               WHERE qualified = 1 
+               AND date(scan_time) >= date('now', ?)
+               ORDER BY scan_time DESC, score DESC 
+               LIMIT ?""",
+            (f'-{days} days', limit)
+        )
+    
+    # -------------------------------------------------------------------------
+    # Write Operations
+    # -------------------------------------------------------------------------
+    
+    def insert_scan_result(
+        self,
+        scan_id: str,
+        scan_time: str,
+        symbol: str,
+        score: Optional[float],
+        method: Optional[str],
+        trend: Optional[str],
+        ema_50: Optional[float],
+        spot_price: Optional[float],
+        atm_iv: Optional[float],
+        hv_20: Optional[float],
+        qualified: bool,
+        min_score_threshold: float,
+    ) -> None:
+        """Insert a single scan result."""
+        self._insert(
+            """INSERT OR REPLACE INTO scan_history 
+               (scan_id, scan_time, symbol, score, method, trend, ema_50, 
+                spot_price, atm_iv, hv_20, qualified, min_score_threshold)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                scan_id,
+                scan_time,
+                symbol,
+                score,
+                method,
+                trend,
+                ema_50,
+                spot_price,
+                atm_iv,
+                hv_20,
+                1 if qualified else 0,
+                min_score_threshold,
+            )
+        )
+    
+    def bulk_insert_scan_results(self, results: list[dict]) -> None:
+        """Bulk insert scan results for efficiency."""
+        if not results:
+            return
+        
+        with get_connection() as conn:
+            conn.executemany(
+                """INSERT OR REPLACE INTO scan_history 
+                   (scan_id, scan_time, symbol, score, method, trend, ema_50, 
+                    spot_price, atm_iv, hv_20, qualified, min_score_threshold)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        r['scan_id'],
+                        r['scan_time'],
+                        r['symbol'],
+                        r.get('score'),
+                        r.get('method'),
+                        r.get('trend'),
+                        r.get('ema_50'),
+                        r.get('spot_price'),
+                        r.get('atm_iv'),
+                        r.get('hv_20'),
+                        1 if r.get('qualified', False) else 0,
+                        r['min_score_threshold'],
+                    )
+                    for r in results
+                ]
+            )
+    
+    def delete_scan(self, scan_id: str) -> int:
+        """Delete all records for a scan run."""
+        return self._delete(
+            "DELETE FROM scan_history WHERE scan_id = ?",
+            (scan_id,)
+        )
+    
+    def cleanup_old_scans(self, days_to_keep: int = 90) -> int:
+        """Delete scan records older than specified days."""
+        cutoff = datetime.now().strftime("%Y-%m-%d")
+        with get_connection() as conn:
+            cursor = conn.execute(
+                """DELETE FROM scan_history 
+                   WHERE date(scan_time) < date(?, ?)""",
+                (cutoff, f'-{days_to_keep} days')
+            )
+            return cursor.rowcount
+
+
 # Convenience instances
 trade_repo = TradeRepository()
 scan_repo = ScanRepository()
 iv_history_repo = IVHistoryRepository()
 config_repo = ConfigRepository()
+scan_history_repo = ScanHistoryRepository()

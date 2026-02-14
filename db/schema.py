@@ -88,11 +88,34 @@ CREATE TABLE IF NOT EXISTS config_settings (
 );
 """
 
+_CREATE_SCAN_HISTORY = """
+CREATE TABLE IF NOT EXISTS scan_history (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id         TEXT    NOT NULL,              -- UUID for the scan run (groups all stocks in same scan)
+    scan_time       TEXT    NOT NULL,              -- ISO-8601 datetime when scan was run
+    symbol          TEXT    NOT NULL,              -- Stock symbol (e.g., 'RELIANCE')
+    score           REAL,                         -- IVP or HV Rank score (0-100)
+    method          TEXT,                         -- 'IVP' or 'HV_RANK'
+    trend           TEXT,                         -- 'Bullish' | 'Bearish' | 'Unknown'
+    ema_50          REAL,                         -- 50-day EMA value
+    spot_price      REAL,                         -- Current market price
+    atm_iv          REAL,                         -- At-the-money implied volatility (%)
+    hv_20           REAL,                         -- 20-day historical volatility (%)
+    qualified       INTEGER NOT NULL DEFAULT 0,   -- 1 if passed threshold, 0 otherwise
+    min_score_threshold REAL,                     -- Minimum score threshold used for this scan
+    UNIQUE(scan_id, symbol)                       -- Prevent duplicate entries per scan
+);
+"""
+
 _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_iv_symbol ON iv_history(stock_symbol);",
     "CREATE INDEX IF NOT EXISTS idx_iv_ts     ON iv_history(timestamp);",
     "CREATE INDEX IF NOT EXISTS idx_trade_sym ON trade_log(symbol);",
     "CREATE INDEX IF NOT EXISTS idx_trade_st  ON trade_log(status);",
+    "CREATE INDEX IF NOT EXISTS idx_scan_hist_scan_id ON scan_history(scan_id);",
+    "CREATE INDEX IF NOT EXISTS idx_scan_hist_symbol ON scan_history(symbol);",
+    "CREATE INDEX IF NOT EXISTS idx_scan_hist_time ON scan_history(scan_time);",
+    "CREATE INDEX IF NOT EXISTS idx_scan_hist_qualified ON scan_history(qualified);",
 ]
 
 
@@ -107,6 +130,7 @@ def initialise_database() -> None:
         conn.execute(_CREATE_TRADE_LOG)
         conn.execute(_CREATE_SCAN_RESULTS)
         conn.execute(_CREATE_CONFIG_SETTINGS)
+        conn.execute(_CREATE_SCAN_HISTORY)
         for idx_sql in _CREATE_INDEXES:
             conn.execute(idx_sql)
     print("[db] Database initialised successfully.")

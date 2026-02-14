@@ -16,7 +16,7 @@ Usage:
     from scanner.iv_scorer import get_iv_score
 
     score = get_iv_score("RELIANCE", current_iv=0.28, kite=kite)
-    # score = {'method': 'IVP', 'score': 72.5, 'current_iv': 0.28}
+    # score = {'method': 'IVP', 'score': 72.5, 'current_iv': 0.28, 'hv_20': 25.5}
 """
 
 import logging
@@ -52,6 +52,32 @@ def _fetch_iv_history(symbol: str) -> list[float]:
     return [row[0] for row in rows]
 
 
+def _fetch_latest_iv_and_hv(symbol: str) -> tuple[float | None, float | None]:
+    """
+    Get the most recent IV and HV readings for a symbol from iv_history table.
+
+    Returns
+    -------
+    tuple[float | None, float | None]
+        (atm_iv, hv_20_day) tuple, either may be None if no records exist.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT atm_iv, hv_20_day
+            FROM iv_history
+            WHERE stock_symbol = ?
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (symbol,),
+        ).fetchone()
+
+    if row:
+        return row[0], row[1]
+    return None, None
+
+
 def _fetch_latest_iv(symbol: str) -> float | None:
     """
     Get the most recent IV reading for a symbol.
@@ -61,19 +87,8 @@ def _fetch_latest_iv(symbol: str) -> float | None:
     float or None
         Latest atm_iv, or None if no records exist.
     """
-    with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT atm_iv
-            FROM iv_history
-            WHERE stock_symbol = ?
-            ORDER BY timestamp DESC
-            LIMIT 1
-            """,
-            (symbol,),
-        ).fetchone()
-
-    return row[0] if row else None
+    iv, _ = _fetch_latest_iv_and_hv(symbol)
+    return iv
 
 
 def _calculate_ivp(iv_history: list[float], current_iv: float) -> float:
@@ -107,7 +122,7 @@ def _calculate_hv_rank(
     kite: KiteClient,
     symbol: str,
     nse_token: int | None = None,
-) -> float | None:
+) -> tuple[float | None, float | None]:
     """
     Compute HV Rank from 1-year daily candle data.
 
@@ -124,12 +139,12 @@ def _calculate_hv_rank(
 
     Returns
     -------
-    float or None
-        HV Rank as a percentage (0–100), or None on failure.
+    tuple[float | None, float | None]
+        (HV Rank as percentage 0–100, current HV value), or (None, None) on failure.
     """
     if nse_token is None:
         logger.warning("No NSE token for %s — cannot compute HV Rank.", symbol)
-        return None
+        return None, None
 
     try:
         candles = kite.historical_data(nse_token, "day", 365)
@@ -137,21 +152,21 @@ def _calculate_hv_rank(
 
         if hv_series.empty or len(hv_series) < 2:
             logger.warning("Insufficient HV series data for %s.", symbol)
-            return None
+            return None, None
 
         current_hv = float(hv_series.iloc[-1])
         min_hv = float(hv_series.min())
         max_hv = float(hv_series.max())
 
         if max_hv == min_hv:
-            return 50.0  # Flat vol — return neutral rank
+            return 50.0, current_hv  # Flat vol — return neutral rank
 
         hv_rank = ((current_hv - min_hv) / (max_hv - min_hv)) * 100
-        return round(hv_rank, 2)
+        return round(hv_rank, 2), current_hv
 
     except Exception as exc:
         logger.error("HV Rank calculation failed for %s: %s", symbol, exc)
-        return None
+        return None, None
 
 
 def get_iv_score(
@@ -187,14 +202,19 @@ def get_iv_score(
             'method': 'IVP' | 'HV_RANK',
             'score': float (0–100),
             'current_iv': float | None,
+            'hv_20': float | None,  # 20-day historical volatility
         }
         Returns None if scoring is not possible.
     """
     iv_history = _fetch_iv_history(symbol)
 
-    # Resolve current_iv if not provided
+    # Resolve current_iv and hv_20 from iv_history table
+    hv_20 = None
     if current_iv is None:
-        current_iv = _fetch_latest_iv(symbol)
+        current_iv, hv_20 = _fetch_latest_iv_and_hv(symbol)
+    else:
+        # Still try to fetch hv_20 from database
+        _, hv_20 = _fetch_latest_iv_and_hv(symbol)
 
     # ── Path 1: IVP (sufficient history) ──
     if len(iv_history) >= config.IVP_MIN_DAYS:
@@ -217,6 +237,7 @@ def get_iv_score(
             "method": "IVP",
             "score": ivp,
             "current_iv": current_iv,
+            "hv_20": hv_20,
         }
 
     # ── Path 2: HV Rank (fallback) ──
@@ -225,13 +246,18 @@ def get_iv_score(
         symbol,
         len(iv_history),
     )
-    hv_rank = _calculate_hv_rank(kite, symbol, nse_token)
+    hv_rank, current_hv = _calculate_hv_rank(kite, symbol, nse_token)
 
     if hv_rank is None:
         return None
+
+    # Use calculated HV if hv_20 not available from database
+    if hv_20 is None and current_hv is not None:
+        hv_20 = current_hv
 
     return {
         "method": "HV_RANK",
         "score": hv_rank,
         "current_iv": current_iv,
+        "hv_20": hv_20,
     }

@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import config
 from core.kite_client import KiteClient
 from core.instrument_master import build_nse_token_map
-from analyst.volume_profile import calculate_volume_profile
+from analyst.volume_profile import calculate_volume_profile, find_hvn_walls
 from ui.app import get_kite_client
 
 logger = logging.getLogger(__name__)
@@ -171,15 +171,23 @@ def create_candlestick_with_volume_profile(
     
     vp_volumes_scaled = [v * scale_factor * 0.3 for v in vp_volumes]  # 30% of candle volume
     
-    # Create figure with secondary y-axis
+    # Create figure with 2 columns: left for candlesticks, right for volume profile
+    # and 2 rows: top for price, bottom for volume
     fig = make_subplots(
-        rows=2, cols=1,
-        row_heights=[0.9, 0.1],
-        shared_xaxes=True,
-        vertical_spacing=0.05
+        rows=2, cols=2,
+        row_heights=[0.85, 0.15],
+        column_widths=[0.85, 0.15],
+        shared_yaxes=True,  # Share y-axis between candlesticks and volume profile
+        shared_xaxes=True,  # Share x-axis between candlesticks and volume bars
+        vertical_spacing=0.05,
+        horizontal_spacing=0.02,
+        specs=[
+            [{"type": "candlestick"}, {"type": "bar"}],  # Row 1: candlesticks + volume profile
+            [{"type": "bar", "colspan": 2}, None]  # Row 2: volume bars spanning both columns
+        ]
     )
     
-    # 1. Candlestick Chart (top subplot)
+    # 1. Candlestick Chart (top-left)
     fig.add_trace(
         go.Candlestick(
             x=dates,
@@ -194,21 +202,51 @@ def create_candlestick_with_volume_profile(
         row=1, col=1
     )
     
-    # 2. Volume Profile (horizontal bars on right of top subplot) - only if we have VP data
+    # 2. Volume Profile (horizontal bars on right side) - only if we have VP data
     if has_vp:
+        # Create horizontal bars showing volume at each price level
+        # Use gradient colors based on volume intensity
+        max_vp_vol = max(vp_volumes) if vp_volumes else 1
+        
+        # Create color gradient: blue (low) -> cyan -> green -> yellow -> red (high)
+        bar_colors = []
+        for vol in vp_volumes:
+            ratio = vol / max_vp_vol
+            if ratio < 0.25:
+                # Blue to Cyan
+                t = ratio / 0.25
+                bar_colors.append(f'rgba(0, {int(t*255)}, 255, 0.7)')
+            elif ratio < 0.5:
+                # Cyan to Green
+                t = (ratio - 0.25) / 0.25
+                bar_colors.append(f'rgba(0, 255, {int(255*(1-t))}, 0.7)')
+            elif ratio < 0.75:
+                # Green to Yellow
+                t = (ratio - 0.5) / 0.25
+                bar_colors.append(f'rgba({int(t*255)}, 255, 0, 0.7)')
+            else:
+                # Yellow to Red
+                t = (ratio - 0.75) / 0.25
+                bar_colors.append(f'rgba(255, {int(255*(1-t))}, 0, 0.7)')
+        
         fig.add_trace(
             go.Bar(
                 y=vp_prices,
-                x=vp_volumes_scaled,
+                x=vp_volumes,
                 orientation='h',
                 name='Volume Profile',
-                marker_color='rgba(0, 100, 255, 0.4)',
+                marker_color=bar_colors,
+                marker_line_color='rgba(255, 255, 255, 0.3)',
+                marker_line_width=0.5,
                 showlegend=True,
-                hovertemplate='Price: ₹%{y:.0f}<br>Volume: %{customdata:.0f}<extra></extra>',
-                customdata=vp_volumes
+                hovertemplate='Price: ₹%{y:.0f}<br>Volume: %{x:,.0f}<extra></extra>'
             ),
-            row=1, col=1
+            row=1, col=2
         )
+        
+        logger.info(f"Volume Profile bars added: {len(vp_prices)} bars")
+        logger.info(f"VP price range: {min(vp_prices):.2f} - {max(vp_prices):.2f}")
+        logger.info(f"VP volume range: {min(vp_volumes):.0f} - {max(vp_volumes):.0f}")
     
     # 3. Standard Volume Bars (bottom subplot)
     colors = ['#26a69a' if closes[i] >= opens[i] else '#ef5350' for i in range(len(closes))]
@@ -309,22 +347,223 @@ def create_candlestick_with_volume_profile(
             xanchor="right",
             x=1
         ),
-        hovermode="x unified"
+        hovermode="closest"
     )
     
     # Update y-axis titles
+    # Left y-axis (candlesticks) - Price
     fig.update_yaxes(title_text="Price (₹)", row=1, col=1)
+    # Right y-axis (volume profile) - no title, shared with left
+    fig.update_yaxes(title_text="", row=1, col=2, showgrid=False)
+    # Bottom subplot y-axis - Volume
     fig.update_yaxes(title_text="Volume", row=2, col=1)
     
-    # Update x-axis with proper date range
+    # Update x-axis titles
     fig.update_xaxes(title_text="Date", row=2, col=1)
+    fig.update_xaxes(title_text="Volume", row=1, col=2)
     
-    # Set x-axis range to match the actual data range
+    # Set x-axis range for candlesticks to match the actual data range
     if dates:
         fig.update_xaxes(range=[dates[0], dates[-1]], row=1, col=1)
         fig.update_xaxes(range=[dates[0], dates[-1]], row=2, col=1)
     
     return fig
+
+
+def calculate_strike_recommendation(
+    volume_profile: dict,
+    spot_price: float,
+    trend: str = 'Unknown',
+    iv_percentile: float = 0,
+    min_otm_pct: float = 2.0,
+    spread_width_pct: float = 2.0
+) -> dict:
+    """
+    Calculate optimal strike prices for credit spreads based on Volume Profile.
+    
+    Based on Volume Profile Spread Strategy Guide:
+    - Bullish trend → Bull Put Spread (short strike below HVN support)
+    - Bearish trend → Bear Call Spread (short strike above HVN resistance)
+    
+    Parameters
+    ----------
+    volume_profile : dict
+        Output from calculate_volume_profile()
+    spot_price : float
+        Current market price
+    trend : str
+        'Bullish', 'Bearish', or 'Unknown'
+    iv_percentile : float
+        IV percentile from scanner (0-100)
+    min_otm_pct : float
+        Minimum % OTM for short strike (default 2%)
+    spread_width_pct : float
+        Width of spread as % of underlying
+        
+    Returns
+    -------
+    dict
+        Strike recommendation with rationale
+    """
+    if not volume_profile or not volume_profile.get('bins'):
+        return None
+    
+    # Find HVN walls
+    hvn_walls = find_hvn_walls(volume_profile, spot_price)
+    support_wall = hvn_walls.get('support_wall')
+    resistance_wall = hvn_walls.get('resistance_wall')
+    all_hvns = hvn_walls.get('all_hvns', [])
+    
+    poc = volume_profile.get('poc', 0)
+    vah = volume_profile.get('va_high', 0)
+    val = volume_profile.get('va_low', 0)
+    
+    recommendation = {
+        'trend': trend,
+        'iv_percentile': iv_percentile,
+        'spot_price': spot_price,
+        'poc': poc,
+        'vah': vah,
+        'val': val,
+        'support_wall': support_wall,
+        'resistance_wall': resistance_wall,
+        'all_hvns': all_hvns,
+        'strategy_type': None,
+        'short_strike': None,
+        'long_strike': None,
+        'volume_wall': None,
+        'rationale': None
+    }
+    
+    # Determine strategy based on trend
+    if trend == 'Bullish':
+        # Bull Put Spread: Find support below current price
+        if support_wall:
+            volume_wall = support_wall
+            # Short strike: Below volume wall, min 2% OTM
+            min_strike = spot_price * (1 - min_otm_pct / 100)
+            short_strike = min(volume_wall * 0.98, min_strike)
+        else:
+            # Fallback to Value Area Low
+            volume_wall = val if val > 0 else spot_price * 0.95
+            short_strike = volume_wall * 0.98
+        
+        # Round to nearest 50 (typical strike interval)
+        short_strike = round(short_strike / 50) * 50
+        
+        # Long strike: Spread width below short
+        spread_width = spot_price * spread_width_pct / 100
+        long_strike = short_strike - spread_width
+        long_strike = round(long_strike / 50) * 50
+        
+        recommendation['strategy_type'] = 'Bull Put Spread'
+        recommendation['short_strike'] = short_strike
+        recommendation['long_strike'] = long_strike
+        recommendation['volume_wall'] = volume_wall
+        recommendation['rationale'] = f"Short strike placed below HVN support at ₹{volume_wall:.0f}"
+        
+    elif trend == 'Bearish':
+        # Bear Call Spread: Find resistance above current price
+        if resistance_wall:
+            volume_wall = resistance_wall
+            # Short strike: Above volume wall, min 2% OTM
+            min_strike = spot_price * (1 + min_otm_pct / 100)
+            short_strike = max(volume_wall * 1.02, min_strike)
+        else:
+            # Fallback to Value Area High
+            volume_wall = vah if vah > 0 else spot_price * 1.05
+            short_strike = volume_wall * 1.02
+        
+        # Round to nearest 50
+        short_strike = round(short_strike / 50) * 50
+        
+        # Long strike: Spread width above short
+        spread_width = spot_price * spread_width_pct / 100
+        long_strike = short_strike + spread_width
+        long_strike = round(long_strike / 50) * 50
+        
+        recommendation['strategy_type'] = 'Bear Call Spread'
+        recommendation['short_strike'] = short_strike
+        recommendation['long_strike'] = long_strike
+        recommendation['volume_wall'] = volume_wall
+        recommendation['rationale'] = f"Short strike placed above HVN resistance at ₹{volume_wall:.0f}"
+    
+    else:
+        # Unknown trend - no recommendation
+        recommendation['rationale'] = "Trend unknown. Run scanner to determine trend."
+    
+    return recommendation
+
+
+def render_strike_recommendation(recommendation: dict):
+    """Render the strike recommendation panel."""
+    
+    if not recommendation:
+        st.info("No strike recommendation available. Run scanner first.")
+        return
+    
+    st.markdown("### 🎯 Strike Recommendation")
+    
+    # Strategy type
+    strategy = recommendation.get('strategy_type')
+    if not strategy:
+        st.warning(recommendation.get('rationale', 'No strategy available'))
+        return
+    
+    # Strategy header
+    strategy_color = "green" if "Put" in strategy else "red"
+    st.markdown(f"**Strategy:** <span style='color:{strategy_color}'>{strategy}</span>", unsafe_allow_html=True)
+    
+    # Key levels
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Spot Price", f"₹{recommendation.get('spot_price', 0):,.0f}")
+    
+    with col2:
+        st.metric("POC", f"₹{recommendation.get('poc', 0):,.0f}")
+    
+    with col3:
+        wall = recommendation.get('volume_wall', 0)
+        st.metric("Volume Wall", f"₹{wall:,.0f}" if wall else "N/A")
+    
+    st.divider()
+    
+    # Strike prices
+    short_strike = recommendation.get('short_strike', 0)
+    long_strike = recommendation.get('long_strike', 0)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### Short Strike (Sell)")
+        if "Put" in strategy:
+            st.info(f"**SELL:** {int(short_strike)} PE")
+        else:
+            st.info(f"**SELL:** {int(short_strike)} CE")
+        st.caption(f"Near Volume Wall: ₹{recommendation.get('volume_wall', 0):,.0f}")
+    
+    with col2:
+        st.markdown("#### Long Strike (Buy)")
+        if "Put" in strategy:
+            st.info(f"**BUY:** {int(long_strike)} PE")
+        else:
+            st.info(f"**BUY:** {int(long_strike)} CE")
+        st.caption("Protection leg")
+    
+    # Rationale
+    st.divider()
+    st.markdown(f"**Rationale:** {recommendation.get('rationale', 'N/A')}")
+    
+    # HVN levels
+    all_hvns = recommendation.get('all_hvns', [])
+    if all_hvns:
+        with st.expander("📊 All HVN Levels"):
+            st.markdown("**High Volume Nodes (Support/Resistance Walls):**")
+            for hvn in sorted(all_hvns, reverse=True):
+                distance = ((recommendation.get('spot_price', 0) - hvn) / recommendation.get('spot_price', 1)) * 100
+                position = "above" if hvn > recommendation.get('spot_price', 0) else "below"
+                st.markdown(f"- ₹{hvn:,.0f} ({position} spot by {abs(distance):.1f}%)")
 
 
 def render_metrics_bar(candidate: dict, analysis: dict = None):
@@ -623,9 +862,17 @@ def render_visual_analyzer():
     logger.info(f"Volume Profile available: {volume_profile is not None}")
     logger.info(f"Spot price: {spot_price}")
     
-    # Get strikes from analysis
-    short_strike = analysis.get('short_strike', 0) if analysis else 0
-    long_strike = analysis.get('long_strike', 0) if analysis else 0
+    # Calculate strike recommendation based on Volume Profile
+    strike_recommendation = calculate_strike_recommendation(
+        volume_profile=volume_profile,
+        spot_price=spot_price,
+        trend=candidate.get('trend', 'Unknown'),
+        iv_percentile=candidate.get('ivp', 0)
+    )
+    
+    # Get strikes from recommendation
+    short_strike = strike_recommendation.get('short_strike', 0) if strike_recommendation else 0
+    long_strike = strike_recommendation.get('long_strike', 0) if strike_recommendation else 0
     
     logger.info(f"Short strike: {short_strike}, Long strike: {long_strike}")
     
@@ -660,13 +907,25 @@ def render_visual_analyzer():
     st.divider()
     
     # ──────────────────────────────────────────────
+    # Render Strike Recommendation
+    # ──────────────────────────────────────────────
+    
+    render_strike_recommendation(strike_recommendation)
+    
+    st.divider()
+    
+    # ──────────────────────────────────────────────
     # Render Trade Action Panel
     # ──────────────────────────────────────────────
     
-    if analysis:
-        render_trade_action_panel(candidate, analysis)
+    if strike_recommendation and strike_recommendation.get('short_strike'):
+        # Update candidate with strike info for trade action
+        candidate['short_strike'] = strike_recommendation.get('short_strike')
+        candidate['long_strike'] = strike_recommendation.get('long_strike')
+        candidate['strategy_type'] = strike_recommendation.get('strategy_type')
+        render_trade_action_panel(candidate, strike_recommendation)
     else:
-        st.info("Analysis data not available. Load from Scanner for full trade recommendations.")
+        st.info("Run Scanner to get trend and IV data for strike recommendations.")
 
 
 # Alias for use in app.py

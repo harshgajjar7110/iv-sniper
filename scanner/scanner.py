@@ -9,7 +9,7 @@ Pipeline
    b. Filter by score threshold.
    c. Detect trend (Bullish / Bearish via 50-day EMA).
 3. Return the top 3–5 candidates sorted by score (descending).
-4. Save results to database with unique scan ID.
+4. Save ALL results to scan_history table in database.
 
 Usage:
     from scanner.scanner import run_scan
@@ -28,6 +28,7 @@ import logging
 import random
 import time
 import threading
+import uuid
 from datetime import datetime
 from typing import Any, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -118,7 +119,8 @@ def run_scan(
     logger.info("═══ Starting Scanner Run ═══")
     scan_start_time = datetime.now()
     total_scanned = 0
-    scan_id = None
+    scan_id = str(uuid.uuid4()) if save_to_db else None
+    scan_time = scan_start_time.isoformat()
 
     if kite is None:
         kite = KiteClient()
@@ -139,6 +141,7 @@ def run_scan(
     _apply_rate_limit_delay()
 
     scored: list[dict[str, Any]] = []
+    all_results: list[dict[str, Any]] = []  # Track ALL stocks for scan_history
     
     # Filter out index symbols
     stock_list = [
@@ -161,6 +164,7 @@ def run_scan(
     progress_lock = threading.Lock()
     processed_count = 0
     qualified_count = 0
+    results_lock = threading.Lock()
 
     def update_progress(symbol: str, qualified: bool = False) -> None:
         """Update progress counter and call callback if provided."""
@@ -191,33 +195,92 @@ def run_scan(
             symbol = futures[future]
             try:
                 result = future.result()
-                if result:
-                    scored.append(result)
-                    update_progress(symbol, qualified=True)
-                else:
-                    update_progress(symbol, qualified=False)
+                with results_lock:
+                    if result:
+                        # Track all results for scan_history
+                        all_results.append(result)
+                        if result.get("qualified", False):
+                            scored.append(result)
+                            update_progress(symbol, qualified=True)
+                        else:
+                            update_progress(symbol, qualified=False)
+                    else:
+                        # Still track stocks that couldn't be processed
+                        all_results.append({
+                            "symbol": symbol,
+                            "score": None,
+                            "method": None,
+                            "trend": None,
+                            "ema_50": None,
+                            "spot": None,
+                            "atm_iv": None,
+                            "hv_20": None,
+                            "qualified": False,
+                        })
+                        update_progress(symbol, qualified=False)
             except Exception as exc:
                 logger.error("Error processing %s: %s", symbol, exc)
+                with results_lock:
+                    all_results.append({
+                        "symbol": symbol,
+                        "score": None,
+                        "method": None,
+                        "trend": None,
+                        "ema_50": None,
+                        "spot": None,
+                        "atm_iv": None,
+                        "hv_20": None,
+                        "qualified": False,
+                    })
                 update_progress(symbol, qualified=False)
 
     # ── Step 3: Sort and truncate ──
     if progress_callback:
         progress_callback(total_scanned, total_scanned, "Sorting results...", len(scored))
     
-    scored.sort(key=lambda c: c["score"], reverse=True)
+    scored.sort(key=lambda c: c.get("score", 0) or 0, reverse=True)
     top = scored[:max_candidates]
 
-    # ── Step 4: Save results to database ──
-    if save_to_db and top:
+    # ── Step 4: Save ALL results to scan_history database ──
+    if save_to_db and scan_id:
         try:
-            from db.scan_store import save_scan_result
-            scan_id = save_scan_result(
-                candidates=top,
-                min_ivp=min_score,
-                min_hv_rank=min_score,
-                total_scanned=total_scanned,
+            from db.repositories import scan_history_repo
+            
+            # Prepare all results with scan metadata
+            history_records = []
+            for result in all_results:
+                history_records.append({
+                    "scan_id": scan_id,
+                    "scan_time": scan_time,
+                    "symbol": result["symbol"],
+                    "score": result.get("score"),
+                    "method": result.get("method"),
+                    "trend": result.get("trend"),
+                    "ema_50": result.get("ema_50"),
+                    "spot_price": result.get("spot"),
+                    "atm_iv": result.get("atm_iv") or result.get("current_iv"),
+                    "hv_20": result.get("hv_20"),
+                    "qualified": result.get("qualified", False),
+                    "min_score_threshold": min_score,
+                })
+            
+            # Bulk insert all scan results
+            scan_history_repo.bulk_insert_scan_results(history_records)
+            logger.info(
+                "Saved %d scan results to scan_history with ID: %s",
+                len(history_records), scan_id
             )
-            logger.info("Scan results saved to database with ID: %s", scan_id)
+            
+            # Also save qualified candidates to scan_results (for backward compatibility)
+            if top:
+                from db.scan_store import save_scan_result
+                save_scan_result(
+                    candidates=top,
+                    min_ivp=min_score,
+                    min_hv_rank=min_score,
+                    total_scanned=total_scanned,
+                )
+                
         except Exception as e:
             logger.warning("Failed to save scan results to database: %s", e)
 
@@ -247,7 +310,11 @@ def _process_stock(
     nse_token_map: dict[str, int],
     min_score: float,
 ) -> dict[str, Any] | None:
-    """Helper to process a single stock (runs in thread)."""
+    """Helper to process a single stock (runs in thread).
+    
+    Returns a dict with all scan data including qualified status.
+    Returns None only if the stock cannot be processed at all.
+    """
     nse_token = nse_token_map.get(symbol)
 
     # ── Step 2a: IV Score ──
@@ -269,10 +336,8 @@ def _process_stock(
 
     score = iv_result["score"]
     method = iv_result["method"]
-
-    # ── Step 2b: Filter by threshold ──
-    if score < min_score:
-        return None  # Silent skip
+    current_iv = iv_result.get("current_iv")
+    hv_20 = iv_result.get("hv_20")  # Get HV from iv_result
 
     # ── Step 2c: Get spot price ──
     _apply_rate_limit_delay()
@@ -299,18 +364,31 @@ def _process_stock(
         except Exception as exc:
             logger.warning("Trend detection failed for %s: %s", symbol, exc)
 
-    candidate = {
+    # Determine if qualified
+    qualified = score >= min_score
+    
+    result = {
         "symbol": symbol,
         "score": score,
         "method": method,
         "trend": trend_data["trend"],
         "ema_50": trend_data.get("ema_50"),
         "spot": spot,
-        "current_iv": iv_result.get("current_iv"),
+        "current_iv": current_iv,
+        "atm_iv": current_iv,  # Include both for compatibility
+        "hv_20": hv_20,
+        "qualified": qualified,
     }
     
-    logger.info(
-        "  ✓ %s — %s = %.1f%% | Trend: %s",
-        symbol, method, score, trend_data["trend"]
-    )
-    return candidate
+    if qualified:
+        logger.info(
+            "  ✓ %s — %s = %.1f%% | Trend: %s",
+            symbol, method, score, trend_data["trend"]
+        )
+    else:
+        logger.debug(
+            "  ✗ %s — %s = %.1f%% (below threshold %.0f%%)",
+            symbol, method, score, min_score
+        )
+    
+    return result
