@@ -108,6 +108,8 @@ def render_capital_health(kite):
     st.markdown("### 💰 Capital Health")
     
     # Try to get real margins from Kite, fallback to config
+    # REVIEW: Consider fetching total capital from a reliable source or making it configurable in the UI
+    # instead of hardcoding a fallback in config.TOTAL_CAPITAL.
     if kite:
         try:
             margins = get_account_margins(kite)
@@ -202,6 +204,8 @@ def render_active_trades(kite):
         return
     
     # Fetch current prices for P&L calculation
+    # REVIEW: Add a timestamp or "last updated" indicator to show freshness of quotes.
+    # Also, consider batching these requests if the number of trades is large.
     if kite and open_trades:
         # Use utility function to get all trade symbols
         try:
